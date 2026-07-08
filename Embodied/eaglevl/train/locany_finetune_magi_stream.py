@@ -54,6 +54,7 @@ from eaglevl.train.constants import (
     REF_START_TOKEN, REF_END_TOKEN, number_tokens_list
 )
 from eaglevl.train.arguments import ModelArguments, DataTrainingArguments
+from eaglevl.train.merge_kernel_utils import parse_merge_kernel_size, merge_kernel_product
 from eaglevl.train.trainer_monkey_patch import replace_create_optimizer_with_various_lr
 from PIL import Image, ImageFile, PngImagePlugin
 from torch.utils.data import Dataset, IterableDataset, DataLoader
@@ -1250,6 +1251,7 @@ def build_stream_packed_dataset_mtp(
     )
 
 
+
 def main():
     launcher = os.environ.get('LAUNCHER', 'slurm')
     init_dist(launcher=launcher, backend='nccl')
@@ -1259,6 +1261,8 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    merge_kernel_override = parse_merge_kernel_size(model_args.vision_merge_kernel_size)
+
 
     if os.path.exists(osp.join(training_args.output_dir, 'done.txt')):
         logger.info("Training done (done.txt exists), exiting!")
@@ -1330,6 +1334,9 @@ def main():
         # ===== LocateAnything (MoonVit + Qwen2/Qwen3) Loading Path =====
         logger.info('Loading LocateAnythingForConditionalGeneration...')
         config = LocateAnythingConfig.from_pretrained(model_args.model_name_or_path)
+        if merge_kernel_override is not None:
+            config.vision_config.merge_kernel_size = merge_kernel_override
+            logger.info(f'Overriding vision merge kernel: {merge_kernel_override}')
         config._attn_implementation = model_args.attn_implementation
         config._attn_implementation_autoset = False
         config.text_config._attn_implementation = model_args.attn_implementation
@@ -1352,9 +1359,12 @@ def main():
         config.none_token_id = none_token_id
 
         model = LocateAnythingForConditionalGeneration.from_pretrained(
-            model_args.model_name_or_path, 
-            torch_dtype=torch.bfloat16, config=config, 
-            attn_implementation=model_args.attn_implementation
+            model_args.model_name_or_path,
+            torch_dtype=torch.bfloat16, config=config,
+            attn_implementation=model_args.attn_implementation,
+            ignore_mismatched_sizes=(
+                merge_kernel_override is not None and merge_kernel_product(merge_kernel_override) != 4
+            ),
         )
             
         model.text_mask_token_id = text_mask_token_id
@@ -1365,17 +1375,27 @@ def main():
         try:
             processor = AutoProcessor.from_pretrained(model_args.model_name_or_path, trust_remote_code=True, use_fast=True)
             processor.tokenizer = tokenizer
+            if merge_kernel_override is not None:
+                processor.image_processor.merge_kernel_size = merge_kernel_override
+                if hasattr(processor, "merge_kernel_size"):
+                    processor.merge_kernel_size = merge_kernel_override
         except Exception as e:
             logger.warning(f'AutoProcessor failed ({e}), building processor from local configs...')
             chat_template_data = load_config(model_args.chat_template_path)
             processor_config = load_config(model_args.processor_config_path)
             preprocessor_config = load_config(model_args.preprocessor_config_path)
+            if merge_kernel_override is not None:
+                preprocessor_config["merge_kernel_size"] = merge_kernel_override
+                processor_config["merge_kernel_size"] = merge_kernel_override
             image_processor = LocateAnythingImageProcessor(**preprocessor_config)
             processor_config["chat_template"] = chat_template_data["chat_template"]
             processor = LocateAnythingProcessor(tokenizer=tokenizer, image_processor=image_processor, **processor_config)
     else:
         logger.info(f"Loading vision backbone from {model_args.vision_path}")
         vision_config = AutoConfig.from_pretrained(model_args.vision_path, trust_remote_code=True)
+        if merge_kernel_override is not None:
+            vision_config.merge_kernel_size = merge_kernel_override
+            logger.info(f'Overriding vision merge kernel: {merge_kernel_override}')
 
         if vision_config.model_type == 'moonvit':
             logger.info('Loading MoonVit...')
@@ -1398,11 +1418,16 @@ def main():
             image_token_index=image_token_index, 
             mlp_connector_layers=model_args.mlp_connector_layers)
         locateanything_config._attn_implementation = 'magi'
+        if merge_kernel_override is not None:
+            locateanything_config.vision_config.merge_kernel_size = merge_kernel_override
         model = LocateAnythingForConditionalGeneration(locateanything_config, vision_model, llm)
 
         chat_template_data = load_config(model_args.chat_template_path)
         processor_config = load_config(model_args.processor_config_path)
         preprocessor_config = load_config(model_args.preprocessor_config_path)
+        if merge_kernel_override is not None:
+            preprocessor_config["merge_kernel_size"] = merge_kernel_override
+            processor_config["merge_kernel_size"] = merge_kernel_override
         image_processor = LocateAnythingImageProcessor(**preprocessor_config)
         processor_config["chat_template"] = chat_template_data["chat_template"]
         processor = LocateAnythingProcessor(tokenizer=tokenizer, image_processor=image_processor, **processor_config)
@@ -1449,6 +1474,11 @@ def main():
     if dist.get_rank() == 0:
         for i, info in enumerate(hostnames):
             logger.info(f"global rank[{i}]: {info}")
+
+    model_kernel = list(getattr(model.config.vision_config, "merge_kernel_size", [2, 2]))
+    processor_kernel = list(getattr(processor.image_processor, "merge_kernel_size", [2, 2]))
+    if model_kernel != processor_kernel:
+        raise ValueError(f"merge kernel mismatch: model={model_kernel}, processor={processor_kernel}")
 
     # Build dataset
     logger.info("Building stream packed MTP dataset...")
@@ -1569,6 +1599,18 @@ def main():
 
         if get_rank() == 0:
             output_dir = training_args.output_dir
+            processor.save_pretrained(output_dir)
+            if merge_kernel_override is not None:
+                preprocessor_config_path = osp.join(output_dir, 'preprocessor_config.json')
+                if osp.exists(preprocessor_config_path):
+                    with open(preprocessor_config_path, 'r', encoding='utf-8') as f:
+                        preprocessor_config_data = json.load(f)
+                    preprocessor_config_data['merge_kernel_size'] = list(processor.image_processor.merge_kernel_size)
+                    with open(preprocessor_config_path, 'w', encoding='utf-8') as f:
+                        json.dump(preprocessor_config_data, f, indent=2, ensure_ascii=False)
+                        f.write('\n')
+                    logger.info("Updated preprocessor_config.json with merge kernel override")
+
 
             locany_utils_src = osp.join(osp.dirname(osp.dirname(osp.abspath(__file__))), 'utils', 'locany')
             skip_files = {'config.json', 'README.md', '__init__.py', '__pycache__'}

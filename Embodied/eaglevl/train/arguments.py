@@ -100,6 +100,10 @@ class ModelArguments:
         default=None,
         metadata={'help': 'Path to preprocessor config file.'}
     )
+    vision_merge_kernel_size: Optional[str] = field(
+        default=None,
+        metadata={'help': "Override MoonViT merge kernel as H,W; use '1,1' for RS small-object resolution-preserving adaptation."},
+    )
     block_size: int = field(
         default=4,
         metadata={'help': 'block size of mask token.'},

@@ -201,6 +201,7 @@ torchrun \
 | `--grad_checkpoint` | False | Gradient checkpointing to reduce memory |
 | `--mlp_connector_layers` | 2 | Number of MLP projector layers |
 | `--vision_select_layer` | -1 | ViT layer to extract features from (-1 = last) |
+| `--vision_merge_kernel_size` | `None` | Override MoonViT patch merge; use `1,1` for RS 512-tile small-object structural adaptation. When merge product differs from 4, mismatched MLP projector weights are skipped/reinitialized. |
 
 ### Data Arguments
 
@@ -307,3 +308,4 @@ checkpoint-{step}/
 - Use `--attn_implementation sdpa` with `--max_seq_length 4096`
 - SDPA does not support long-context (16K+) training
 - Magi Attention (`magi`) only supports Hopper and Blackwell architectures
+- For RS 512-tile merge adaptation on RTX 4090, set `--vision_merge_kernel_size 1,1`, `--attn_implementation sdpa`, `--max_seq_length 4096`, and `--max_num_tokens 4096`.

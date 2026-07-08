@@ -78,6 +78,27 @@ class LocateAnythingPreTrainedModel(PreTrainedModel):
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
+def get_visual_projector_input_size(vision_config) -> int:
+    merge_kernel = getattr(vision_config, "merge_kernel_size", (2, 2))
+    if len(merge_kernel) != 2:
+        raise ValueError("vision_config.merge_kernel_size must contain two positive integers")
+    merge_h, merge_w = int(merge_kernel[0]), int(merge_kernel[1])
+    if merge_h <= 0 or merge_w <= 0:
+        raise ValueError("vision_config.merge_kernel_size must contain two positive integers")
+    return int(vision_config.hidden_size) * merge_h * merge_w
+
+
+def build_mlp_projector(vision_config, text_config) -> nn.Sequential:
+    visual_hidden_size = get_visual_projector_input_size(vision_config)
+    llm_hidden_size = int(text_config.hidden_size)
+    return nn.Sequential(
+        nn.LayerNorm(visual_hidden_size),
+        nn.Linear(visual_hidden_size, llm_hidden_size),
+        nn.GELU(),
+        nn.Linear(llm_hidden_size, llm_hidden_size),
+    )
+
+
 IGNORE_INDEX = -100
 class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, GenerationMixin):
     config_class = LocateAnythingConfig
@@ -114,16 +135,9 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
             else:
                 raise ValueError(f'Unsupported language model architecture: {config.text_config.architectures[0]}. Only Qwen2ForCausalLM and Qwen3ForCausalLM are supported.')
 
-        vit_hidden_size = config.vision_config.hidden_size
-        llm_hidden_size = config.text_config.hidden_size
-
         # MLP for moonvit (without pixel_shuffle_back, direct mapping)
-        self.mlp1 = nn.Sequential(
-                nn.LayerNorm(vit_hidden_size*4),
-                nn.Linear(vit_hidden_size*4, llm_hidden_size),
-                nn.GELU(),
-                nn.Linear(llm_hidden_size, llm_hidden_size)
-            )
+        self.mlp1 = build_mlp_projector(config.vision_config, config.text_config)
+        self.visual_merge_kernel_size = tuple(int(x) for x in getattr(config.vision_config, "merge_kernel_size", (2, 2)))
         self.image_token_index = config.image_token_index
         self.neftune_alpha = None
 

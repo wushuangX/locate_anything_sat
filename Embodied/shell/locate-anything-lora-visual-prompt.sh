@@ -33,6 +33,9 @@ if [[ -z "${META_PATH:-}" ]]; then
   exit 1
 fi
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-"deepspeed_configs/zero_stage1_config.json"}
+ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-magi}
+GRAD_CHECKPOINT=${GRAD_CHECKPOINT:-True}
+
 
 PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-1}
 GRADIENT_ACC=${GRADIENT_ACC:-1}
@@ -52,6 +55,11 @@ FREEZE_LLM=${FREEZE_LLM:-True}
 FREEZE_BACKBONE=${FREEZE_BACKBONE:-True}
 FREEZE_MLP=${FREEZE_MLP:-False}
 
+EXTRA_ARGS=()
+if [[ -n "${VISION_MERGE_KERNEL_SIZE:-}" ]]; then
+  EXTRA_ARGS+=(--vision_merge_kernel_size "$VISION_MERGE_KERNEL_SIZE")
+fi
+
 mkdir -p "$OUTPUT_DIR"
 export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
 
@@ -70,7 +78,7 @@ LAUNCHER=pytorch python -m torch.distributed.run \
   --meta_path "$META_PATH" \
   --overwrite_output_dir False \
   --block_size 6 \
-  --attn_implementation magi \
+  --attn_implementation "$ATTN_IMPLEMENTATION" \
   --causal_attn False \
   --freeze_llm "$FREEZE_LLM" \
   --freeze_mlp "$FREEZE_MLP" \
@@ -98,11 +106,12 @@ LAUNCHER=pytorch python -m torch.distributed.run \
   --max_num_tokens_per_sample "$MAX_NUM_TOKENS_PER_SAMPLE" \
   --max_num_tokens "$MAX_NUM_TOKENS" \
   --do_train True \
-  --grad_checkpoint True \
+  --grad_checkpoint "$GRAD_CHECKPOINT" \
   --group_by_length False \
   --deepspeed "$DEEPSPEED_CONFIG" \
   --report_to "tensorboard" \
   --run_name "$script_name" \
   --use_onelogger True \
   --mlp_connector_layers 2 \
+  "${EXTRA_ARGS[@]}" \
   2>&1 | tee -a "${OUTPUT_DIR}/training_log.txt"
