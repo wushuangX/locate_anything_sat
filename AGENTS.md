@@ -259,11 +259,22 @@ Recipe 字段：`annotation`（str/list，多文件合并）/ `root`（图像根
 
 ### 4.2 遥感数据集转换
 
-主流遥感检测数据集（COCO/DOTA 格式）需转成 LocateAnything JSONL。**<TODO: 在 `data/` 下放置转换脚本（如 `convert_coco_to_locany.py`、`convert_dota_to_locany.py`），输出 JSONL + 记录类别表>**。转换要点：
-- 框格式统一为 `(x1,y1,x2,y2)` 水平框 → `<x1><y1><x2><y2>` token。
-- DOTA 等带旋转框数据集：取外接矩形（AABB）或单独设计旋转表达（超出当前 PBD 范围，需评估）。
-- 类别名翻译/归一（如 `small-vehicle`→`vehicle`），保持与推理 prompt 一致。
-- 多目标 prompt 用 `</c>` 拼接所有类别。
+主流遥感检测数据集（COCO/DOTA 格式）需转成 LocateAnything JSONL。DOTA HBB 第一阶段使用 `Embodied/scripts/convert_dota_hbb_to_locany.py`：
+```bash
+cd Embodied
+python scripts/convert_dota_hbb_to_locany.py \
+  --dota-root /data/data/738c885b302947929603f33110544338/道路检测数据集/DOTA-v1.0 \
+  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_512 \
+  --version v1.0 --splits train val --tile-size 512 \
+  --max-boxes-per-sample 30 --recipe-name dota_v1_hbb_512
+```
+转换要点：
+- DOTA OBB 行格式为 `x1 y1 ... x4 y4 class difficult`；第一阶段取外接水平框 HBB/AABB。
+- 框格式统一为 `(x1,y1,x2,y2)` 水平框 → `<x1><y1><x2><y2>` token，坐标归一化到 `[0,1000]`。
+- 训练 tile 默认 `512×512`、`overlap=0`、`min_visibility=0.5`、`max_boxes_per_sample=30`；超 cap 时复用同一 tile 拆成多条 JSONL 样本。
+- 默认保留 `difficult=1` 样本用于训练；评估阶段再排除 difficult。
+- 类别名默认保留 DOTA 原名（如 `small-vehicle`），保持 prompt 与 `<ref>` 一致。
+- 多目标 prompt 用 `</c>` 拼接当前样本中的类别。
 
 **小目标专用参考数据集**：AI-TOD（专为微小目标，8 类，目标均值 12.8px）、VisDrone（无人机视角密集小目标）、xView（超高分辨率）、DOTA（遥感旋转目标）、DIOR。优先用 AI-TOD / VisDrone 验证小目标能力。
 
