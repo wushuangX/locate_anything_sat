@@ -13,7 +13,7 @@ import json
 import math
 import sys
 import zipfile
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -54,7 +54,7 @@ class SplitStats:
     samples_written: int = 0
     skipped_difficult_objects: int = 0
     skipped_small_or_invisible_objects: int = 0
-    class_counts: Counter = None
+    class_counts: Counter | None = None
 
     def __post_init__(self) -> None:
         if self.class_counts is None:
@@ -309,7 +309,7 @@ def save_tile(image: Image.Image, out_path: Path, tile_box: tuple[int, int, int,
         tile.save(out_path, format="PNG")
 
 
-def convert_split(args: argparse.Namespace, version: str, split: str, recipe_entries: dict) -> SplitStats:
+def convert_split(args: argparse.Namespace, version: str, split: str, recipe_entries: dict, cwd: Path) -> SplitStats:
     split_dir = args.dota_root / split
     label_dir = choose_label_dir(split_dir, version, args.label_version)
     records = build_records(split_dir, label_dir)
@@ -389,9 +389,11 @@ def convert_split(args: argparse.Namespace, version: str, split: str, recipe_ent
 
     if not args.dry_run:
         dataset_key = f"{args.recipe_name or args.dota_root.name}_{split}_hbb_{args.tile_size}"
+        annotation_recipe = str(annotation_path.resolve().relative_to(cwd))
+        root_recipe = str(args.output_root.resolve().relative_to(cwd))
         recipe_entries[dataset_key] = {
-            "annotation": str(annotation_rel),
-            "root": str(args.output_root),
+            "annotation": annotation_recipe,
+            "root": root_recipe,
             "repeat_time": args.repeat_time,
             "data_augment": args.data_augment,
         }
@@ -427,10 +429,11 @@ def write_recipe_and_metadata(args: argparse.Namespace, version: str, recipe_ent
 def main() -> None:
     args = parse_args()
     version = infer_version(args.dota_root, args.version)
+    cwd = Path.cwd().resolve()
     recipe_entries: dict = {}
     all_stats: list[SplitStats] = []
     for split in args.splits:
-        stats = convert_split(args, version, split, recipe_entries)
+        stats = convert_split(args, version, split, recipe_entries, cwd)
         all_stats.append(stats)
         print(json.dumps(stats.to_dict(), ensure_ascii=False), flush=True)
     write_recipe_and_metadata(args, version, recipe_entries, all_stats)
