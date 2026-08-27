@@ -42,7 +42,7 @@ NONE_RE = re.compile(r"<box>[Nn]one</box>", re.IGNORECASE)
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model-path", required=True)
-    p.add_argument("--data-root", required=True, help="Output root from converter, e.g. data/dota_v1_hbb_512")
+    p.add_argument("--data-root", required=True, help="Output root from converter, e.g. data/dota_v1_hbb_448")
     p.add_argument("--annotation", required=True, help="JSONL file relative to data-root")
     p.add_argument("--num-samples", type=int, default=200)
     p.add_argument("--iou-threshold", type=float, default=0.5)
@@ -179,35 +179,41 @@ def main():
         gt_boxes = extract_gt(sample)
         total_gts += len(gt_boxes)
 
-        try:
-            result = worker.detect(
-                image,
-                DOTA_V1_CLASSES,
-                generation_mode=args.generation_mode,
-                max_new_tokens=args.max_new_tokens,
-                temperature=0.0,
-                verbose=False,
-            )
-            answer = result.get("answer", "")
-        except Exception as e:
-            print(f"  [ERROR] tile {idx}: {e}")
-            errors += 1
-            continue
+        # Run detection per-category to match training prompt format
+        # (training data uses single-category prompts, not all-15 concatenated)
+        all_pred_boxes: list[tuple[str, tuple[int, int, int, int]]] = []
+        for cls in DOTA_V1_CLASSES:
+            try:
+                result = worker.detect(
+                    image,
+                    [cls],
+                    generation_mode=args.generation_mode,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=0.0,
+                    verbose=False,
+                )
+                answer = result.get("answer", "")
+            except Exception as e:
+                print(f"  [ERROR] tile {idx} class {cls}: {e}")
+                errors += 1
+                continue
 
-        if NONE_RE.search(answer):
-            none_count += 1
+            if NONE_RE.search(answer):
+                none_count += 1
 
-        pred_boxes = parse_answer(answer)
-        total_preds += len(pred_boxes)
+            cls_preds = parse_answer(answer)
+            all_pred_boxes.extend(cls_preds)
 
-        tp, fp, fn = match_boxes(pred_boxes, gt_boxes, args.iou_threshold)
+        total_preds += len(all_pred_boxes)
+
+        tp, fp, fn = match_boxes(all_pred_boxes, gt_boxes, args.iou_threshold)
         for k in set(list(tp.keys()) + list(fp.keys()) + list(fn.keys())):
             total_tp[k] += tp[k]
             total_fp[k] += fp[k]
             total_fn[k] += fn[k]
 
         if (idx + 1) % 20 == 0:
-            print(f"  [{idx+1}/{len(samples)}] preds={total_preds} gts={total_gts} none={none_count}")
+            print(f"  [{idx+1}/{len(samples)}] preds={total_preds} gts={total_gts} none={none_count}", flush=True)
 
     # Report
     print("\n" + "=" * 80)

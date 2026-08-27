@@ -50,10 +50,19 @@ class LocateAnythingWorker:
             )
             return
 
+        from transformers import AutoConfig
+        resolved_attn = attn if attn != "la_flash" else "sdpa"
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        config._attn_implementation = resolved_attn
+        if hasattr(config, "text_config"):
+            config.text_config._attn_implementation = resolved_attn
+        if hasattr(config, "vision_config"):
+            config.vision_config._attn_implementation = resolved_attn
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
         self.model = AutoModel.from_pretrained(
             model_path,
+            config=config,
             torch_dtype=dtype,
             trust_remote_code=True,
         ).to(device).eval()
