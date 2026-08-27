@@ -5,8 +5,8 @@ cd /data/locate_anything_sat/Embodied
 
 export GPUS=1
 export MODEL_PATH=/data/LocateAnything-3B
-export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_512/recipes/dota_v1_hbb_512.json
-export OUTPUT_DIR=/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_512_lora_1gpu_smoke_default_merge
+export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448/recipes/dota_v1_hbb_448.json
+export OUTPUT_DIR=/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_448_lora_1gpu_smoke_default_merge
 export MAX_STEPS=5
 export LR=2e-5
 export DEEPSPEED_CONFIG=deepspeed_configs/zero_stage1_config.json
@@ -82,7 +82,7 @@ LAUNCHER=pytorch python -m torch.distributed.run \
   --group_by_length False \
   --deepspeed "${DEEPSPEED_CONFIG}" \
   --report_to tensorboard \
-  --run_name "dota_v1_hbb_512_lora_1gpu_smoke_default_merge" \
+  --run_name "dota_v1_hbb_448_lora_1gpu_smoke_default_merge" \
   --remove_unused_columns False \
   --overwrite_output_dir False \
   --save_strategy steps \

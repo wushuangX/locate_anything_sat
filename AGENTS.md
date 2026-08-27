@@ -370,7 +370,7 @@ ______________________________________________________________________
 | 同上 | `--grad_checkpoint` | False | 梯度检查点省显存（遥感长序列开） |
 | 同上 | `--vision_select_layer` | -1 | ViT 取特征层（-1=最后） |
 | 同上 | `--mlp_connector_layers` | 2 | MLP 投影器层数 |
-| 同上 | `--vision_merge_kernel_size` | None | 覆盖 MoonViT patch merge；遥感 512 tile 小目标结构适配设 `1,1`，merge product≠4 时会跳过/重初始化不匹配的 MLP projector 权重 |
+| 同上 | `--vision_merge_kernel_size` | None | 覆盖 MoonViT patch merge；默认 None 保持原始 `2×2`，DOTA/RS 微调优先保持默认以复用原始视觉-MLP 分布；仅实验性消融才设 `1,1` |
 | Recipe JSON | `repeat_time` | 1.0 | 采样权重（≥1 重复，<1 下采样） |
 | Recipe JSON | `data_augment` | false | resize 多尺度增强（小目标推荐开） |
 | Recipe JSON | `visual_prompt` | false | 视觉提示微调（裁剪作 query） |

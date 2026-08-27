@@ -1,9 +1,10 @@
 #!/usr/bin/env python
-"""Convert a pretrained LocateAnything checkpoint from 2x2 MoonViT merge to 1x1.
+"""[EXPERIMENTAL] Convert a pretrained LocateAnything checkpoint from 2x2 MoonViT merge to 1x1.
 
-The MLP projector input dimension changes from vit_hidden_size*4 to
-vit_hidden_size. This script surgically averages the old 2x2 MLP weights into
-the new 1x1 MLP shape, giving a much better initialization than random weights.
+WARNING: 1x1 merge changes the MLP projector input distribution. Empirical DOTA-v1.0
+LoRA fine-tuning showed category-name degradation (truncated/garbled class tokens) by
+step ~2750. This script is retained for ablation only. For production RS fine-tuning,
+keep the default 2x2 merge and use 448x448 tiles (divisible by 28 = 14px patch * 2x2).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-path", type=Path, required=True, help="Original LocateAnything checkpoint path")
     parser.add_argument("--output-path", type=Path, required=True, help="Output checkpoint path")
     parser.add_argument("--merge-kernel", type=str, default="1,1", help="Target merge kernel size, e.g. 1,1")
+    parser.add_argument("--i-understand-this-is-experimental", action="store_true", help="Required guard: 1x1 merge changes the MLP projector input distribution and has been shown to degrade fine-tuning; only use for ablation.")
     return parser.parse_args()
 
 
@@ -61,6 +63,8 @@ def average_mlp_weights(old_mlp, new_mlp, old_merge_product: int, new_merge_prod
 
 def main() -> None:
     args = parse_args()
+    if not args.i_understand_this_is_experimental:
+        raise SystemExit("Refusing to run: 1x1 merge is experimental and degrades fine-tuning. Pass --i-understand-this-is-experimental to override.")
     merge_kernel = tuple(int(x) for x in args.merge_kernel.split(","))
     if len(merge_kernel) != 2 or any(k <= 0 for k in merge_kernel):
         raise ValueError("--merge-kernel must be two positive integers like '1,1'")

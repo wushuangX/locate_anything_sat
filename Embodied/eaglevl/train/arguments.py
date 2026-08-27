@@ -102,7 +102,7 @@ class ModelArguments:
     )
     vision_merge_kernel_size: Optional[str] = field(
         default=None,
-        metadata={'help': "Override MoonViT merge kernel as H,W; use '1,1' for RS small-object resolution-preserving adaptation."},
+        metadata={'help': "Override MoonViT merge kernel as H,W. Leave unset to preserve the pretrained 2,2 merge; 1,1 is experimental."},
     )
     block_size: int = field(
         default=4,

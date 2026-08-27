@@ -4,13 +4,13 @@ set -eo pipefail
 cd /data/locate_anything_sat/Embodied
 
 export GPUS=1
-export MODEL_PATH=/data/LocateAnything-3B-merge1x1
-export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_512/recipes/dota_v1_hbb_512.json
-export OUTPUT_DIR=/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_512_lora_1gpu_smoke
+export MODEL_PATH=/data/LocateAnything-3B
+export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448/recipes/dota_v1_hbb_448.json
+export OUTPUT_DIR=/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_448_lora_1gpu_smoke
 export MAX_STEPS=20
 export LR=2e-5
 export DEEPSPEED_CONFIG=deepspeed_configs/zero_stage1_config.json
-export VISION_MERGE_KERNEL_SIZE=1,1
+unset VISION_MERGE_KERNEL_SIZE
 export ATTENTION_IMPLEMENTATION=sdpa
 export GRAD_CHECKPOINT=True
 export MAX_SEQ_LENGTH=4096
@@ -39,7 +39,6 @@ export CUDA_VISIBLE_DEVICES=0
 export NCCL_DEBUG=INFO
 
 EXTRA_ARGS=(
-  --vision_merge_kernel_size "${VISION_MERGE_KERNEL_SIZE}"
   --attn_implementation "${ATTENTION_IMPLEMENTATION}"
   --max_num_tokens_per_sample "${MAX_NUM_TOKENS_PER_SAMPLE}"
 )
@@ -84,7 +83,7 @@ LAUNCHER=pytorch python -m torch.distributed.run \
   --group_by_length False \
   --deepspeed "${DEEPSPEED_CONFIG}" \
   --report_to tensorboard \
-  --run_name "dota_v1_hbb_512_lora_1gpu_smoke" \
+  --run_name "dota_v1_hbb_448_lora_1gpu_smoke" \
   --remove_unused_columns False \
   --overwrite_output_dir False \
   --save_strategy steps \

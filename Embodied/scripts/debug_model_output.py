@@ -8,8 +8,8 @@ from locateanything_worker import LocateAnythingWorker
 from PIL import Image
 import torch
 
-w = LocateAnythingWorker("/data/LocateAnything-3B-merge1x1", device="cuda", dtype=torch.bfloat16, attn="sdpa")
-img = Image.open("data/dota_v1_hbb_512/tiles/val/P0003__x0_y0_s512.png").convert("RGB")
+w = LocateAnythingWorker("/data/LocateAnything-3B", device="cuda", dtype=torch.bfloat16, attn="sdpa")
+img = Image.open("data/dota_v1_hbb_448/tiles/val/P0003__x0_y0_s448.png").convert("RGB")
 cats = ["plane", "baseball-diamond", "bridge", "ground-track-field",
         "small-vehicle", "large-vehicle", "ship", "tennis-court",
         "basketball-court", "storage-tank", "soccer-ball-field",
