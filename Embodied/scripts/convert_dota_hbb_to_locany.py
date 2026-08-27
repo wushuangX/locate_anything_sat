@@ -3,7 +3,7 @@
 
 The converter supports extracted DOTA-v1.0, DOTA-v1.5 and DOTA-v2.0 layouts.
 It also supports v1.x image/label directories whose files are still inside zip
-archives by reading from zip and writing 512x512 training tiles.
+archives by reading from zip and writing 448x448 training tiles by default.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None  # DOTA-v2.0 has images up to ~800M pixels
 
 PROMPT_TEMPLATE = "Locate all the instances that matches the following description: {classes}."
 DOTA_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
@@ -83,7 +84,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", choices=["auto", "v1.0", "v1.5", "v2.0"], default="auto")
     parser.add_argument("--splits", nargs="+", default=["train"], help="Labelled splits to convert, e.g. train val")
     parser.add_argument("--label-version", choices=["auto", "v1.0", "v1.5", "v2.0"], default="auto")
-    parser.add_argument("--tile-size", type=int, default=512)
+    parser.add_argument("--tile-size", type=int, default=448)
     parser.add_argument("--overlap", type=float, default=0.0, help="Tile overlap ratio in [0, 0.9)")
     parser.add_argument("--min-visibility", type=float, default=0.5, help="Min clipped HBB area/original HBB area")
     parser.add_argument("--min-box-size", type=float, default=2.0, help="Min clipped width/height in pixels")
@@ -97,7 +98,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-augment", action="store_true", help="Set data_augment=true in recipe")
     parser.add_argument("--repeat-time", type=float, default=1.0)
     parser.add_argument("--dry-run", action="store_true", help="Read annotations and images but do not write tiles/jsonl")
+    parser.add_argument("--image-extra-roots", nargs="*", default=[], help="Extra directories to search for images (e.g. DOTA-v1.0 images for DOTA-v2.0 labels)")
     args = parser.parse_args()
+    args.image_extra_roots = [Path(p) for p in args.image_extra_roots]
     validate_args(args)
     return args
 
@@ -105,6 +108,8 @@ def parse_args() -> argparse.Namespace:
 def validate_args(args: argparse.Namespace) -> None:
     if args.tile_size <= 0:
         raise ValueError("--tile-size must be positive")
+    if args.tile_size % 28 != 0:
+        raise ValueError("--tile-size must be a multiple of 28 for 14px patches with 2x2 merge")
     if not (0.0 <= args.overlap < 0.9):
         raise ValueError("--overlap must be in [0, 0.9)")
     if args.max_boxes_per_sample <= 0:
@@ -126,11 +131,15 @@ def infer_version(root: Path, explicit: str) -> str:
     return "v1.0"
 
 
-def choose_label_dir(split_dir: Path, version: str, label_version: str) -> Path:
+def choose_label_dir(split_dir: Path, version: str, label_version: str, split_name: str = "") -> Path:
     if label_version != "auto":
         candidates = [split_dir / f"labelTxt-{label_version}"]
     elif version == "v2.0":
-        candidates = [split_dir / "labelTxt-v2.0"]
+        name = split_dir.name
+        candidates = [
+            split_dir / "labelTxt-v2.0" / f"DOTA-v2.0_{name}",
+            split_dir / "labelTxt-v2.0",
+        ]
     elif version == "v1.5":
         candidates = [split_dir / "labelTxt-v1.5", split_dir / "labelTxt-v1.0"]
     else:
@@ -164,9 +173,12 @@ def index_zip_files(root: Path, suffixes: Sequence[str]) -> dict[str, tuple[Path
     return indexed
 
 
-def build_records(split_dir: Path, label_dir: Path) -> list[ImageRecord]:
+def build_records(split_dir: Path, label_dir: Path, extra_image_dirs: list[Path] | None = None) -> list[ImageRecord]:
     image_dir = split_dir / "images"
     disk_images = index_directory_files(image_dir, DOTA_EXTENSIONS)
+    for extra in extra_image_dirs or []:
+        for stem, path in index_directory_files(extra, DOTA_EXTENSIONS).items():
+            disk_images.setdefault(stem, path)
     zip_images = index_zip_files(image_dir, DOTA_EXTENSIONS)
     disk_labels = index_directory_files(label_dir, (".txt",))
     zip_labels = index_zip_files(label_dir, (".txt",))
@@ -309,10 +321,16 @@ def save_tile(image: Image.Image, out_path: Path, tile_box: tuple[int, int, int,
         tile.save(out_path, format="PNG")
 
 
+def _relative_or_abs(path: Path, cwd: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(cwd))
+    except ValueError:
+        return str(path.resolve())
+
 def convert_split(args: argparse.Namespace, version: str, split: str, recipe_entries: dict, cwd: Path) -> SplitStats:
     split_dir = args.dota_root / split
     label_dir = choose_label_dir(split_dir, version, args.label_version)
-    records = build_records(split_dir, label_dir)
+    records = build_records(split_dir, label_dir, args.image_extra_roots)
     stats = SplitStats(split=split)
 
     annotation_rel = Path("annotations") / f"{args.dota_root.name}_{split}_hbb_{args.tile_size}.jsonl"
@@ -389,8 +407,8 @@ def convert_split(args: argparse.Namespace, version: str, split: str, recipe_ent
 
     if not args.dry_run:
         dataset_key = f"{args.recipe_name or args.dota_root.name}_{split}_hbb_{args.tile_size}"
-        annotation_recipe = str(annotation_path.resolve().relative_to(cwd))
-        root_recipe = str(args.output_root.resolve().relative_to(cwd))
+        annotation_recipe = _relative_or_abs(annotation_path, cwd)
+        root_recipe = _relative_or_abs(args.output_root, cwd)
         recipe_entries[dataset_key] = {
             "annotation": annotation_recipe,
             "root": root_recipe,
@@ -410,6 +428,10 @@ def write_recipe_and_metadata(args: argparse.Namespace, version: str, recipe_ent
     recipe_name = args.recipe_name or f"{args.dota_root.name}_hbb_{args.tile_size}"
     recipe_path = recipes_dir / f"{recipe_name}.json"
     recipe_path.write_text(json.dumps(recipe_entries, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    train_only_entries = {key: value for key, value in recipe_entries.items() if "_train_" in key}
+    if train_only_entries:
+        train_only_path = recipes_dir / f"{recipe_name}_train_only.json"
+        train_only_path.write_text(json.dumps(train_only_entries, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     metadata = {
         "dota_root": str(args.dota_root),
         "version": version,

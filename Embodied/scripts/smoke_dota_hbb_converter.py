@@ -18,7 +18,7 @@ def write_tiny_dota(root: Path) -> None:
     label_dir = split / "labelTxt-v1.0"
     image_dir.mkdir(parents=True)
     label_dir.mkdir(parents=True)
-    Image.new("RGB", (768, 512), color=(12, 34, 56)).save(image_dir / "P0001.png")
+    Image.new("RGB", (672, 448), color=(12, 34, 56)).save(image_dir / "P0001.png")
     (label_dir / "P0001.txt").write_text(
         "imagesource:synthetic\n"
         "gsd:1.0\n"
@@ -49,7 +49,7 @@ def main() -> None:
                 "--splits",
                 "train",
                 "--tile-size",
-                "512",
+                "448",
                 "--max-boxes-per-sample",
                 "1",
                 "--recipe-name",
@@ -57,16 +57,18 @@ def main() -> None:
             ],
             check=True,
         )
-        jsonl_path = output_root / "annotations" / "DOTA-v1.0_train_hbb_512.jsonl"
+        jsonl_path = output_root / "annotations" / "DOTA-v1.0_train_hbb_448.jsonl"
         lines = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines()]
         assert len(lines) == 2, lines
         answers = [line["conversations"][1]["value"] for line in lines]
         assert any("<ref>small-vehicle</ref>" in answer for answer in answers), answers
         assert any("<ref>large-vehicle</ref>" in answer for answer in answers), answers
-        assert (output_root / "tiles" / "train" / "P0001__x0_y0_s512.png").exists()
-        assert (output_root / "tiles" / "train" / "P0001__x256_y0_s512.png").exists()
+        assert (output_root / "tiles" / "train" / "P0001__x0_y0_s448.png").exists()
+        assert (output_root / "tiles" / "train" / "P0001__x224_y0_s448.png").exists()
         recipe = json.loads((output_root / "recipes" / "tiny_dota.json").read_text(encoding="utf-8"))
-        assert "tiny_dota_train_hbb_512" in recipe
+        assert "tiny_dota_train_hbb_448" in recipe
+        train_only = json.loads((output_root / "recipes" / "tiny_dota_train_only.json").read_text(encoding="utf-8"))
+        assert list(train_only) == ["tiny_dota_train_hbb_448"], train_only
     print("dota hbb converter smoke passed")
 
 

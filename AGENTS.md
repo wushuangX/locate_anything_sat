@@ -264,14 +264,14 @@ Recipe 字段：`annotation`（str/list，多文件合并）/ `root`（图像根
 cd Embodied
 python scripts/convert_dota_hbb_to_locany.py \
   --dota-root /data/data/738c885b302947929603f33110544338/道路检测数据集/DOTA-v1.0 \
-  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_512 \
-  --version v1.0 --splits train val --tile-size 512 \
-  --max-boxes-per-sample 30 --recipe-name dota_v1_hbb_512
+  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_448 \
+  --version v1.0 --splits train val --tile-size 448 \
+  --max-boxes-per-sample 30 --recipe-name dota_v1_hbb_448
 ```
 转换要点：
 - DOTA OBB 行格式为 `x1 y1 ... x4 y4 class difficult`；第一阶段取外接水平框 HBB/AABB。
 - 框格式统一为 `(x1,y1,x2,y2)` 水平框 → `<x1><y1><x2><y2>` token，坐标归一化到 `[0,1000]`。
-- 训练 tile 默认 `512×512`、`overlap=0`、`min_visibility=0.5`、`max_boxes_per_sample=30`；超 cap 时复用同一 tile 拆成多条 JSONL 样本。
+- 训练 tile 默认 `448×448`、`overlap=0`、`min_visibility=0.5`、`max_boxes_per_sample=30`；448 是 `14px patch × 2×2 merge = 28` 的整数倍，避免训练时额外 padding/resize；超 cap 时复用同一 tile 拆成多条 JSONL 样本。
 - 默认保留 `difficult=1` 样本用于训练；评估阶段再排除 difficult。
 - 类别名默认保留 DOTA 原名（如 `small-vehicle`），保持 prompt 与 `<ref>` 一致。
 - 多目标 prompt 用 `</c>` 拼接当前样本中的类别。

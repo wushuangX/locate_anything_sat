@@ -221,49 +221,51 @@ Samples without images are treated as text-only conversation data.
 
 ### DOTA HBB Tiled Conversion
 
-Use `scripts/convert_dota_hbb_to_locany.py` for the first remote-sensing HBB training stage. It reads DOTA OBB labels (`x1 y1 ... x4 y4 class difficult`), converts each object to its horizontal enclosing box, slices images into 512×512 tiles, and writes LocateAnything JSONL plus a recipe.
+Use `scripts/convert_dota_hbb_to_locany.py` for the first remote-sensing HBB training stage. It reads DOTA OBB labels (`x1 y1 ... x4 y4 class difficult`), converts each object to its horizontal enclosing box, slices images into 448×448 tiles, and writes LocateAnything JSONL plus a recipe.
 
 ```bash
 cd Embodied
 python scripts/convert_dota_hbb_to_locany.py \
   --dota-root /data/data/738c885b302947929603f33110544338/道路检测数据集/DOTA-v1.0 \
-  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_512 \
+  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_448 \
   --version v1.0 \
   --splits train val \
-  --tile-size 512 \
+  --tile-size 448 \
   --max-boxes-per-sample 30 \
-  --recipe-name dota_v1_hbb_512
+  --recipe-name dota_v1_hbb_448
 ```
 
 Output layout:
 
 ```text
-data/dota_v1_hbb_512/
+data/dota_v1_hbb_448/
 ├── annotations/
-│   ├── DOTA-v1.0_train_hbb_512.jsonl
-│   └── DOTA-v1.0_val_hbb_512.jsonl
+│   ├── DOTA-v1.0_train_hbb_448.jsonl
+│   └── DOTA-v1.0_val_hbb_448.jsonl
 ├── tiles/
 │   ├── train/
 │   └── val/
 ├── recipes/
-│   └── dota_v1_hbb_512.json
+│   ├── dota_v1_hbb_448.json
+│   └── dota_v1_hbb_448_train_only.json
 └── metadata/
-    └── dota_v1_hbb_512_stats.json
+    └── dota_v1_hbb_448_stats.json
 ```
 
 Default conversion policy:
 
-- `512×512` tiles with `--overlap 0.0`.
+- `448×448` tiles with `--overlap 0.0`; 448 is divisible by the native 2×2 merge stride (`14px patch × 2 = 28`), so fine-tuning keeps the original LocateAnything merge path without tile padding artifacts.
 - DOTA class names are kept unchanged, e.g. `small-vehicle`.
 - `difficult=1` objects are included for training by default; add `--exclude-difficult` for evaluation-style conversion.
 - Objects are kept in a tile when clipped area / original HBB area is at least `--min-visibility 0.5`.
 - If one tile has more than `--max-boxes-per-sample 30` boxes, the converter reuses the same tile image and splits the annotations into multiple JSONL samples.
+- The converter also writes `*_train_only.json` so training can exclude validation samples while keeping the combined recipe for inspection.
 - For DOTA-v1.0/v1.5, both extracted files and `*.zip` archives under `images/` or `labelTxt-*` are supported.
 
 The generated recipe is passed directly to training:
 
 ```bash
-export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_512/recipes/dota_v1_hbb_512.json
+export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448/recipes/dota_v1_hbb_448.json
 ```
 
 ---
