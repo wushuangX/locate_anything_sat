@@ -22,7 +22,7 @@ export HF_TOKEN
 
 GPUS=${GPUS:-8}
 NNODES=${1:-1}
-OUTPUT_DIR=${2:-"work_dirs/locany_lora_visual_prompt_single_turn"}
+OUTPUT_DIR=${2:-${OUTPUT_DIR:-"work_dirs/locany_lora_visual_prompt_single_turn"}}
 NODE_RANK=${NODE_RANK:-0}
 PORT=${PORT:-29500}
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
