@@ -93,7 +93,7 @@ LAUNCHER=pytorch python -m torch.distributed.run \
   --gradient_accumulation_steps "$GRADIENT_ACC" \
   --save_strategy "steps" \
   --save_steps "$SAVE_STEPS" \
-  --save_total_limit 3 \
+  --save_total_limit "${SAVE_TOTAL_LIMIT:-3}" \
   --learning_rate "$LR" \
   --weight_decay 0.01 \
   --warmup_steps "$WARMUP_STEPS" \
