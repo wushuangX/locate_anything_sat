@@ -24,6 +24,7 @@ from transformers import GenerationConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ModelOutput, logging
+from transformers.utils import is_flash_attn_2_available
 from .configuration_locateanything import LocateAnythingConfig
 from transformers.utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
 from eaglevl.sp_utils import  (get_pg_manager, ring_split_for_sequence_parallel)
@@ -113,7 +114,13 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
             self.vision_model = vision_model
         else:
             if config.vision_config.model_type == 'moonvit':
-                config.vision_config._attn_implementation = 'flash_attention_2'
+                vision_attn_impl = getattr(config.vision_config, '_attn_implementation', None) or 'flash_attention_2'
+                if vision_attn_impl == 'flash_attention_2' and not is_flash_attn_2_available():
+                    logger.warning_once(
+                        "flash_attn is not available for MoonViT training; falling back to sdpa."
+                    )
+                    vision_attn_impl = 'sdpa'
+                config.vision_config._attn_implementation = vision_attn_impl
                 self.vision_model = MoonVitPretrainedModel(config.vision_config)
             else:
                 raise ValueError(f'Unsupported vision model type: {config.vision_config.model_type}. Only moonvit is supported.')
