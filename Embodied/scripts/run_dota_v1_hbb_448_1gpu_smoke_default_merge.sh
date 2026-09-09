@@ -5,7 +5,7 @@ cd /data/locate_anything_sat/Embodied
 
 export GPUS=1
 export MODEL_PATH=/data/LocateAnything-3B
-export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448/recipes/dota_v1_hbb_448.json
+export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1/recipes/dota_v1_hbb_448_mix_v1_train_only.json
 export OUTPUT_DIR=/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_448_lora_1gpu_smoke_default_merge
 export MAX_STEPS=5
 export LR=2e-5

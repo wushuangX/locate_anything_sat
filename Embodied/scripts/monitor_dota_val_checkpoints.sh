@@ -2,8 +2,8 @@
 set -eo pipefail
 
 OUTPUT_DIR=${OUTPUT_DIR:?Set OUTPUT_DIR}
-DATA_ROOT=${DATA_ROOT:-data/dota_v1_hbb_448}
-ANNOTATION=${ANNOTATION:-annotations/DOTA-v1.0_val_hbb_448.jsonl}
+DATA_ROOT=${DATA_ROOT:-data/dota_v1_hbb_448_mix_v1}
+ANNOTATION=${ANNOTATION:-annotations/DOTA-v1.0_test_t1_hbb_448.jsonl}
 NUM_SAMPLES=${NUM_SAMPLES:-50}
 INTERVAL_SECONDS=${INTERVAL_SECONDS:-120}
 BASE_CODE_DIR=${BASE_CODE_DIR:-/data/LocateAnything-3B}

@@ -8,7 +8,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
 export GPUS=7
 export HF_TOKEN=${HF_TOKEN:-dummy-local-path}
 export MODEL_PATH=/data/LocateAnything-3B
-export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448/recipes/dota_v1_hbb_448_train_only.json
+export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1/recipes/dota_v1_hbb_448_mix_v1_train_only.json
 export OUTPUT_DIR=/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_448_lora_7gpu_valmon_run1
 unset VISION_MERGE_KERNEL_SIZE
 export ATTN_IMPLEMENTATION=sdpa
@@ -40,8 +40,8 @@ echo $! > "$OUTPUT_DIR/train_launcher.pid"
 
 nohup env \
   OUTPUT_DIR="$OUTPUT_DIR" \
-  DATA_ROOT=data/dota_v1_hbb_448 \
-  ANNOTATION=annotations/DOTA-v1.0_val_hbb_448.jsonl \
+  DATA_ROOT=data/dota_v1_hbb_448_mix_v1 \
+  ANNOTATION=annotations/DOTA-v1.0_test_t1_hbb_448.jsonl \
   BASE_CODE_DIR=/data/LocateAnything-3B \
   MERGE_KERNEL=2,2 \
   NUM_SAMPLES=50 \
