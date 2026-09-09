@@ -221,35 +221,39 @@ Samples without images are treated as text-only conversation data.
 
 ### DOTA HBB Tiled Conversion
 
-Use `scripts/convert_dota_hbb_to_locany.py` for the first remote-sensing HBB training stage. It reads DOTA OBB labels (`x1 y1 ... x4 y4 class difficult`), converts each object to its horizontal enclosing box, slices images into 448×448 tiles, and writes LocateAnything JSONL plus a recipe.
+Use `scripts/convert_dota_hbb_to_locany.py` for the first remote-sensing HBB training stage. It reads DOTA OBB labels (`x1 y1 ... x4 y4 class difficult`), converts each object to its horizontal enclosing box, slices images into 448×448 tiles, and writes a **static mixed-task** LocateAnything JSONL (detection / single-class / class-subset / pure-negative / referring) plus recipes. Task mix is on by default; `--no-task-mix` restores the legacy one all-classes sample per tile.
 
 ```bash
 cd Embodied
 python scripts/convert_dota_hbb_to_locany.py \
   --dota-root /data/data/738c885b302947929603f33110544338/道路检测数据集/DOTA-v1.0 \
-  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_448 \
+  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1 \
+  --reuse-tiles-from /data/locate_anything_sat/Embodied/data/dota_v1_hbb_448 \
   --version v1.0 \
   --splits train val \
   --tile-size 448 \
   --max-boxes-per-sample 30 \
-  --recipe-name dota_v1_hbb_448
+  --recipe-name dota_v1_hbb_448_mix_v1
 ```
 
-Output layout:
+Output layout (`data/dota_v1_hbb_448_mix_v1/`):
 
 ```text
-data/dota_v1_hbb_448/
+data/dota_v1_hbb_448_mix_v1/
 ├── annotations/
-│   ├── DOTA-v1.0_train_hbb_448.jsonl
-│   └── DOTA-v1.0_val_hbb_448.jsonl
-├── tiles/
-│   ├── train/
-│   └── val/
+│   ├── DOTA-v1.0_train_mix_hbb_448.jsonl          # 90% of train source images, mixed tasks
+│   ├── DOTA-v1.0_internal_val_mix_hbb_448.jsonl   # held-out 10% of train source images
+│   ├── DOTA-v1.0_test_t1_hbb_448.jsonl            # official val, all-classes T1 only
+│   └── DOTA-v1.0_test_mix_hbb_448.jsonl           # official val, mixed tasks
+├── tiles -> /data/.../dota_v1_hbb_448/tiles       # symlink when --reuse-tiles-from is set
 ├── recipes/
-│   ├── dota_v1_hbb_448.json
-│   └── dota_v1_hbb_448_train_only.json
+│   ├── dota_v1_hbb_448_mix_v1.json                # train_mix + internal_val_mix (inspection)
+│   ├── dota_v1_hbb_448_mix_v1_train_only.json     # training --meta_path
+│   ├── dota_v1_hbb_448_mix_v1_internal_val.json
+│   ├── dota_v1_hbb_448_mix_v1_test_t1.json
+│   └── dota_v1_hbb_448_mix_v1_test_mix.json
 └── metadata/
-    └── dota_v1_hbb_448_stats.json
+    └── dota_v1_hbb_448_mix_v1_stats.json
 ```
 
 Default conversion policy:
@@ -259,13 +263,16 @@ Default conversion policy:
 - `difficult=1` objects are included for training by default; add `--exclude-difficult` for evaluation-style conversion.
 - Objects are kept in a tile when clipped area / original HBB area is at least `--min-visibility 0.5`.
 - If one tile has more than `--max-boxes-per-sample 30` boxes, the converter reuses the same tile image and splits the annotations into multiple JSONL samples.
-- The converter also writes `*_train_only.json` so training can exclude validation samples while keeping the combined recipe for inspection.
-- For DOTA-v1.0/v1.5, both extracted files and `*.zip` archives under `images/` or `labelTxt-*` are supported.
+- **Task mix** (`--task-mix`, default on): each non-empty tile draws `--samples-per-tile 6` samples with weights T1 all-classes detection 0.50 / T2 single-class 0.15 / T3 class subset 0.10 / T4 pure negative 0.15 / T5 referring 0.10. T4 picks a class guaranteed absent from the tile (split-wide class inventory minus anything intersecting the tile) and answers `<box>none</box>`; `harbor`/`bridge`/`roundabout` are skipped as scene-scale classes when alternatives exist. T5 phrases like `the leftmost small-vehicle` use the `LocateAnythingWorker.ground_single` prompt verbatim. Empty tiles are never used as T4 factories.
+- **9:1 internal split**: DOTA `train` source images (not tiles) are shuffled and `--internal-val-ratio 0.1` held out into `*_internal_val_mix_*.jsonl`; the rest go to `*_train_mix_*.jsonl`. Non-train splits are never held out.
+- **Dual val render**: official `val` is written twice — `*_test_t1_*.jsonl` keeps only the all-classes T1 emission so `scripts/eval_baseline_dota.py` (which parses GT boxes and queries all 15 classes) scores it correctly; `*_test_mix_*.jsonl` uses the same mix emitter as train. Do not point the T1 scorer at mix files.
+- **`--reuse-tiles-from DIR`**: reuse an earlier conversion's `tiles/` instead of re-extracting pixels; missing tiles are counted in `tiles_missing` and skipped. `output_root/tiles` becomes a symlink to `DIR/tiles`, so the old `data/dota_v1_hbb_448/` stays untouched.
+- A partition with zero source images is not created (no empty JSONL, no recipe key). For DOTA-v1.0/v1.5, both extracted files and `*.zip` archives under `images/` or `labelTxt-*` are supported.
 
-The generated recipe is passed directly to training:
+The generated train-only recipe is passed directly to training:
 
 ```bash
-export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448/recipes/dota_v1_hbb_448.json
+export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1/recipes/dota_v1_hbb_448_mix_v1_train_only.json
 ```
 
 ---

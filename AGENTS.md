@@ -257,16 +257,19 @@ Recipe JSON 样例（遥感 + 防遗忘混合）：
 
 Recipe 字段：`annotation`（str/list，多文件合并）/ `root`（图像根）/ `repeat_time`（≥1 重复，<1 下采样）/ `data_augment`（resize 增强，多尺度，推荐对小目标开）。
 
+> **随机性与可复现性约定（2026-09 决策）**：数据集生成（任务混合采样、负样本采样、train/val 划分）**不固定随机种子**，接受由此引入的随机波动，不为 seed 复现做任何工程投入。实验对比与追溯以**数据集版本目录 + metadata 统计**（实际任务构成、样本数、划分规模）为准，不追求逐 bit 复现数据文件。
+
 ### 4.2 遥感数据集转换
 
-主流遥感检测数据集（COCO/DOTA 格式）需转成 LocateAnything JSONL。DOTA HBB 第一阶段使用 `Embodied/scripts/convert_dota_hbb_to_locany.py`：
+主流遥感检测数据集（COCO/DOTA 格式）需转成 LocateAnything JSONL。DOTA HBB 第一阶段使用 `Embodied/scripts/convert_dota_hbb_to_locany.py`（默认 `--task-mix`：输出 T1–T5 静态混合任务 JSONL；DOTA train 按源图 9:1 划分内部验证；官方 val 双测试渲染；`--reuse-tiles-from` 复用已切好的 tiles 不重切像素）：
 ```bash
 cd Embodied
 python scripts/convert_dota_hbb_to_locany.py \
   --dota-root /data/data/738c885b302947929603f33110544338/道路检测数据集/DOTA-v1.0 \
-  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_448 \
+  --output-root /data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1 \
+  --reuse-tiles-from /data/locate_anything_sat/Embodied/data/dota_v1_hbb_448 \
   --version v1.0 --splits train val --tile-size 448 \
-  --max-boxes-per-sample 30 --recipe-name dota_v1_hbb_448
+  --max-boxes-per-sample 30 --recipe-name dota_v1_hbb_448_mix_v1
 ```
 转换要点：
 - DOTA OBB 行格式为 `x1 y1 ... x4 y4 class difficult`；第一阶段取外接水平框 HBB/AABB。
@@ -275,6 +278,11 @@ python scripts/convert_dota_hbb_to_locany.py \
 - 默认保留 `difficult=1` 样本用于训练；评估阶段再排除 difficult。
 - 类别名默认保留 DOTA 原名（如 `small-vehicle`），保持 prompt 与 `<ref>` 一致。
 - 多目标 prompt 用 `</c>` 拼接当前样本中的类别。
+- **任务混合（默认开）**：每个非空 tile 抽 `--samples-per-tile 6` 条，权重 T1 全类检测 0.50 / T2 单类 0.15 / T3 类子集 0.10 / T4 纯负样本 0.15 / T5 指代表达 0.10。T4 从 split 全类集合取“保证不在该 tile 内”的类，答案 `<box>none</box>`；T5 短语如 `the leftmost small-vehicle`，prompt 与 `LocateAnythingWorker.ground_single` 逐字符一致。`--no-task-mix` 恢复旧行为（每 tile 每 chunk 一条全类样本）。
+- **train 9:1 内部验证**：按源图（非 tile）随机划分，输出 `*_train_mix_*.jsonl` 与 `*_internal_val_mix_*.jsonl`。
+- **官方 val 双渲染**：`*_test_t1_*.jsonl`（纯全类 T1，供 `eval_baseline_dota.py` 与 val 监控使用，**勿指向 mix 文件**）与 `*_test_mix_*.jsonl`（与 train 相同的混合发射）。
+- **`--reuse-tiles-from DIR`**：复用既有输出的 `tiles/`（缺失 tile 记入 `tiles_missing` 并跳过），新输出目录的 `tiles` 为指向 `DIR/tiles` 的符号链接；旧 `data/dota_v1_hbb_448/` 保持原样不动。
+- **Recipe 文件**：`{name}.json`（train_mix + internal_val_mix，供检视）、`{name}_train_only.json`（训练 `--meta_path`）、`{name}_internal_val.json`、`{name}_test_t1.json`、`{name}_test_mix.json`；无对应图像分区的文件不生成。
 
 **小目标专用参考数据集**：AI-TOD（专为微小目标，8 类，目标均值 12.8px）、VisDrone（无人机视角密集小目标）、xView（超高分辨率）、DOTA（遥感旋转目标）、DIOR。优先用 AI-TOD / VisDrone 验证小目标能力。
 
