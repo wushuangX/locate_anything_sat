@@ -202,6 +202,8 @@ torchrun \
 | `--mlp_connector_layers` | 2 | Number of MLP projector layers |
 | `--vision_select_layer` | -1 | ViT layer to extract features from (-1 = last) |
 | `--vision_merge_kernel_size` | `None` | Override MoonViT patch merge. Leave `None` for DOTA/RS LoRA fine-tuning so the original `2×2` visual merge and pretrained MLP distribution are preserved; `1,1` is experimental only and changes the projector input distribution. |
+| `--use_lda` | `None` | Residual Local Detail Adapter inserted between the MoonViT encoder output and patch merge (`F' = F + γ·ΔF`, γ initialized to 0 so the first forward is a numerical identity). `'true'`/`'false'`; unset keeps the checkpoint config (base LocateAnything is off). Serialized under `vision_config` in checkpoint `config.json`. When enabled, LDA is unfrozen even under `--freeze_backbone`. |
+| `--lda_bottleneck_dim` | `128` | LDA bottleneck channels. Applied only when `--use_lda true`. |
 
 ### Data Arguments
 

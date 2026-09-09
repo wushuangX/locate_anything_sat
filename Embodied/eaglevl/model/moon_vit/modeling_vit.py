@@ -41,6 +41,8 @@ class MoonViTConfig(PretrainedConfig):
         hidden_size: int = 1152,
         intermediate_size: int = 4304,
         merge_kernel_size: tuple[int, int] = (2, 2),
+        use_lda: bool = False,
+        lda_bottleneck_dim: int = 128,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -55,6 +57,9 @@ class MoonViTConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         # Patch merger config
         self.merge_kernel_size = merge_kernel_size
+        # Local Detail Adapter config (residual adapter before patch merge)
+        self.use_lda = bool(use_lda)
+        self.lda_bottleneck_dim = int(lda_bottleneck_dim)
 
 
 def multihead_attention(
@@ -559,6 +564,63 @@ def patch_merger(
     return outputs
 
 
+class LocalDetailAdapter(nn.Module):
+    """Residual Local Detail Adapter applied to packed MoonViT tokens before patch merge.
+
+    Computes ``F' = F + gamma * deltaF`` with ``gamma`` initialized to 0, so the
+    first forward after enabling is a numerical identity.
+    """
+
+    def __init__(self, hidden_size: int, bottleneck_dim: int = 128) -> None:
+        super().__init__()
+        if bottleneck_dim <= 0:
+            raise ValueError("lda_bottleneck_dim must be a positive integer")
+        self.bottleneck_dim = int(bottleneck_dim)
+        self.down = nn.Linear(hidden_size, bottleneck_dim)
+        self.act1 = nn.GELU()
+        self.dwconv = nn.Conv2d(
+            bottleneck_dim,
+            bottleneck_dim,
+            kernel_size=3,
+            padding=1,
+            groups=bottleneck_dim,
+            bias=True,
+        )
+        self.act2 = nn.GELU()
+        self.up = nn.Linear(bottleneck_dim, hidden_size)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, hidden_states: torch.Tensor, grid_hws: torch.Tensor) -> torch.Tensor:
+        if hidden_states.numel() == 0:
+            return hidden_states
+        residual = hidden_states
+        hidden = self.act1(self.down(hidden_states))
+        d = hidden.size(-1)
+        pieces = []
+        consumed = 0
+        for height, width in grid_hws.tolist():
+            n = height * width
+            seq = hidden[consumed : consumed + n]
+            if seq.size(0) != n:
+                raise ValueError(
+                    f"LocalDetailAdapter grid_hws {grid_hws.tolist()} expects {n} tokens "
+                    f"at grid ({height}, {width}) but got {seq.size(0)}"
+                )
+            pieces.append(
+                self.dwconv(seq.view(1, height, width, d).permute(0, 3, 1, 2))
+                .permute(0, 2, 3, 1)
+                .reshape(n, d)
+            )
+            consumed += n
+        if consumed != hidden.size(0):
+            raise ValueError(
+                f"LocalDetailAdapter grid_hws {grid_hws.tolist()} consumed {consumed} tokens "
+                f"but hidden_states has {hidden.size(0)} leftover tokens"
+            )
+        delta = self.up(self.act2(torch.cat(pieces, dim=0)))
+        return residual + self.gamma.to(dtype=delta.dtype) * delta
+
+
 class MoonVitPretrainedModel(PreTrainedModel):
     config_class = MoonViTConfig
     model_type = "moonvit"
@@ -592,6 +654,12 @@ class MoonVitPretrainedModel(PreTrainedModel):
             },
         )
 
+        if bool(getattr(config, "use_lda", False)):
+            self.lda = LocalDetailAdapter(
+                hidden_size=int(config.hidden_size),
+                bottleneck_dim=int(getattr(config, "lda_bottleneck_dim", 128)),
+            )
+
     def forward(
         self, pixel_values: torch.Tensor, grid_hws: torch.Tensor
     ) -> torch.Tensor:
@@ -605,6 +673,9 @@ class MoonVitPretrainedModel(PreTrainedModel):
         """
         hidden_states = self.patch_embed(pixel_values, grid_hws)
         hidden_states = self.encoder(hidden_states, grid_hws)
+        lda = getattr(self, "lda", None)
+        if lda is not None:
+            hidden_states = lda(hidden_states, grid_hws)
         hidden_states = patch_merger(
             hidden_states, grid_hws, merge_kernel_size=self.merge_kernel_size
         )

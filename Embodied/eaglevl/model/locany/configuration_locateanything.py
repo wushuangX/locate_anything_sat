@@ -25,6 +25,8 @@ class MoonViTConfig(PretrainedConfig):
         hidden_size: int = 1152,
         intermediate_size: int = 4304,
         merge_kernel_size: tuple[int, int] = (2, 2),
+        use_lda: bool = False,
+        lda_bottleneck_dim: int = 128,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -39,6 +41,9 @@ class MoonViTConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         # Patch merger config
         self.merge_kernel_size = merge_kernel_size
+        # Local Detail Adapter config (residual adapter before patch merge)
+        self.use_lda = bool(use_lda)
+        self.lda_bottleneck_dim = int(lda_bottleneck_dim)
 
 
 class LocateAnythingConfig(PretrainedConfig):

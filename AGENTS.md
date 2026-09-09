@@ -379,6 +379,8 @@ ______________________________________________________________________
 | 同上 | `--vision_select_layer` | -1 | ViT 取特征层（-1=最后） |
 | 同上 | `--mlp_connector_layers` | 2 | MLP 投影器层数 |
 | 同上 | `--vision_merge_kernel_size` | None | 覆盖 MoonViT patch merge；默认 None 保持原始 `2×2`，DOTA/RS 微调优先保持默认以复用原始视觉-MLP 分布；仅实验性消融才设 `1,1` |
+| 同上 | `--use_lda` | None | 残差 Local Detail Adapter（MoonViT encoder 输出与 patch merge 之间，`F' = F + γ·ΔF`，γ 初始 0 故首前向为恒等）；`'true'`/`'false'`，未设置沿用 checkpoint/config（基座为关）；序列化进 checkpoint `config.json` 的 `vision_config`；开启时即使 `freeze_backbone` 也会解冻 LDA |
+| 同上 | `--lda_bottleneck_dim` | 128 | LDA 瓶颈通道数（仅 `--use_lda true` 生效） |
 | Recipe JSON | `repeat_time` | 1.0 | 采样权重（≥1 重复，<1 下采样） |
 | Recipe JSON | `data_augment` | false | resize 多尺度增强（小目标推荐开） |
 | Recipe JSON | `visual_prompt` | false | 视觉提示微调（裁剪作 query） |

@@ -1263,6 +1263,27 @@ def main():
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     merge_kernel_override = parse_merge_kernel_size(model_args.vision_merge_kernel_size)
 
+    def _parse_optional_bool(value: Optional[str], name: str) -> Optional[bool]:
+        if value is None or str(value).strip() == "":
+            return None
+        v = str(value).strip().lower()
+        if v in ("true", "1", "yes"):
+            return True
+        if v in ("false", "0", "no"):
+            return False
+        raise ValueError(f"{name} must be true or false")
+
+    def _apply_lda_override(vision_conf):
+        if lda_override is True:
+            vision_conf.use_lda = True
+            vision_conf.lda_bottleneck_dim = int(model_args.lda_bottleneck_dim)
+            logger.info(f'Enabling LDA bottleneck_dim={vision_conf.lda_bottleneck_dim}')
+        elif lda_override is False:
+            vision_conf.use_lda = False
+            logger.info('Disabling LDA')
+
+    lda_override = _parse_optional_bool(model_args.use_lda, "use_lda")
+
 
     if os.path.exists(osp.join(training_args.output_dir, 'done.txt')):
         logger.info("Training done (done.txt exists), exiting!")
@@ -1337,6 +1358,7 @@ def main():
         if merge_kernel_override is not None:
             config.vision_config.merge_kernel_size = merge_kernel_override
             logger.info(f'Overriding vision merge kernel: {merge_kernel_override}')
+        _apply_lda_override(config.vision_config)
         config._attn_implementation = model_args.attn_implementation
         config._attn_implementation_autoset = False
         config.text_config._attn_implementation = model_args.attn_implementation
@@ -1396,6 +1418,7 @@ def main():
         if merge_kernel_override is not None:
             vision_config.merge_kernel_size = merge_kernel_override
             logger.info(f'Overriding vision merge kernel: {merge_kernel_override}')
+        _apply_lda_override(vision_config)
 
         if vision_config.model_type == 'moonvit':
             logger.info('Loading MoonVit...')
@@ -1420,6 +1443,7 @@ def main():
         locateanything_config._attn_implementation = 'magi'
         if merge_kernel_override is not None:
             locateanything_config.vision_config.merge_kernel_size = merge_kernel_override
+        _apply_lda_override(locateanything_config.vision_config)
         model = LocateAnythingForConditionalGeneration(locateanything_config, vision_model, llm)
 
         chat_template_data = load_config(model_args.chat_template_path)
@@ -1518,6 +1542,18 @@ def main():
         for k, v in layers.named_parameters():
             logger.info(f'Unfreezing ViT layer: {k}')
             v.requires_grad = True
+
+    lda = getattr(model.vision_model, "lda", None)
+    if bool(getattr(model.config.vision_config, "use_lda", False)):
+        if lda is None:
+            raise RuntimeError("use_lda=True but vision_model.lda is missing")
+        lda.train()
+        for param in lda.parameters():
+            param.requires_grad = True
+        n = sum(p.numel() for p in lda.parameters())
+        logger.info(f"Unfreezing LDA ({n} params), gamma={float(lda.gamma.detach()):.6f}")
+    elif lda is not None:
+        raise RuntimeError("vision_model.lda exists but use_lda is False")
 
     # Verify parameter order consistency across all ranks (critical for ZeRO-3)
     param_names = [name for name, param in model.named_parameters()]

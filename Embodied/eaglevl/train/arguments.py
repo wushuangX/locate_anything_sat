@@ -104,6 +104,14 @@ class ModelArguments:
         default=None,
         metadata={'help': "Override MoonViT merge kernel as H,W. Leave unset to preserve the pretrained 2,2 merge; 1,1 is experimental."},
     )
+    use_lda: Optional[str] = field(
+        default=None,
+        metadata={'help': "Residual Local Detail Adapter before patch merge: 'true' or 'false'. Unset keeps checkpoint/config (base LA is off)."},
+    )
+    lda_bottleneck_dim: int = field(
+        default=128,
+        metadata={'help': 'LDA bottleneck channels. Applied only when --use_lda true.'},
+    )
     block_size: int = field(
         default=4,
         metadata={'help': 'block size of mask token.'},

@@ -59,6 +59,12 @@ EXTRA_ARGS=()
 if [[ -n "${VISION_MERGE_KERNEL_SIZE:-}" ]]; then
   EXTRA_ARGS+=(--vision_merge_kernel_size "$VISION_MERGE_KERNEL_SIZE")
 fi
+if [[ -n "${USE_LDA:-}" ]]; then
+  EXTRA_ARGS+=(--use_lda "$USE_LDA")
+fi
+if [[ -n "${LDA_BOTTLENECK_DIM:-}" ]]; then
+  EXTRA_ARGS+=(--lda_bottleneck_dim "$LDA_BOTTLENECK_DIM")
+fi
 
 mkdir -p "$OUTPUT_DIR"
 export NCCL_DEBUG="${NCCL_DEBUG:-INFO}"
