@@ -114,12 +114,15 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
             self.vision_model = vision_model
         else:
             if config.vision_config.model_type == 'moonvit':
-                vision_attn_impl = getattr(config.vision_config, '_attn_implementation', None) or 'flash_attention_2'
-                if vision_attn_impl == 'flash_attention_2' and not is_flash_attn_2_available():
-                    logger.warning_once(
-                        "flash_attn is not available for MoonViT training; falling back to sdpa."
-                    )
-                    vision_attn_impl = 'sdpa'
+                if is_flash_attn_2_available():
+                    vision_attn_impl = "flash_attention_2"
+                else:
+                    vision_attn_impl = getattr(config.vision_config, "_attn_implementation", None) or "sdpa"
+                    if vision_attn_impl == "flash_attention_2":
+                        logger.warning_once(
+                            "flash_attn is not available for MoonViT training; falling back to sdpa."
+                        )
+                        vision_attn_impl = "sdpa"
                 config.vision_config._attn_implementation = vision_attn_impl
                 self.vision_model = MoonVitPretrainedModel(config.vision_config)
             else:
