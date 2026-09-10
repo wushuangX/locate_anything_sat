@@ -25,6 +25,8 @@ ______________________________________________________________________
 ```
 locate_anything_sat/                 # ← 仓库根（AGENTS.md 位于此，便于 agent 发现）
 ├── AGENTS.md                        # ★ 本文件（agent 开发指南）
+├── docs/                            # 手工评测清单等
+│   └── dota_v1_val_manual_tiles.md  # DOTA val 15 类 × 3 tile
 ├── Embodied/                        # ← 工作根（训练/评估/pip install 在此执行）
 │   ├── eaglevl/                     # 核心 Python 包（pip install -e . 安装名为 locate_anything）
 │   │   ├── model/
@@ -60,6 +62,7 @@ locate_anything_sat/                 # ← 仓库根（AGENTS.md 位于此，便
 │   ├── document/                    # TRAINING.md / DATA_PREPARATION.md / STREAMING_PACKING.md / RESULTS.md
 │   ├── assets/                      # 论文图
 │   ├── locateanything_worker.py     # ★ 推理 worker API（detect / ground_multi / point / detect_text）
+│   ├── scripts/prompt_viz_app.py    # Streamlit：改 prompt + GT/预测可视化（§3.5.1）
 │   └── pyproject.toml               # 依赖（pinned：transformers==4.57.1, deepspeed==0.15.4, peft==0.12.0 …）
 ├── Eagle/                           # EAGLE 兄弟发布（零依赖，可忽略）
 └── Eagle2_5/                        # 同上
@@ -195,6 +198,23 @@ print(worker.point(img, "the small target")["answer"])
 ```
 
 输出格式：框 `<ref>label</ref><box><x1><y1><x2><y2></box>`（坐标为 `[0,1000]` 整数，除以 1000 得相对坐标）；点 `<box><x><y></box>`；无目标 `<box>none</box>`。
+
+### 3.5.1 Streamlit 提示词 / GT 可视化
+
+交互改 detect 提示词、对照 GT（绿）与预测（红）。脚本：`Embodied/scripts/prompt_viz_app.py`（依赖已在 `pyproject.toml` 的 `streamlit`）。**在 NVIDIA 训练机上跑**，Mac 不能加载 3B。
+
+```bash
+cd Embodied
+source .venv/bin/activate   # 或项目实际 venv
+CUDA_VISIBLE_DEVICES=1 PYTHONPATH="$(pwd)" \
+  streamlit run scripts/prompt_viz_app.py \
+  --server.port 6006 --server.address 0.0.0.0 --server.headless true
+```
+
+侧栏填写 checkpoint 与 data root（DOTA mix 默认识别 `…/data/dota_v1_hbb_448_mix_v1`）。页面选 `tiles` split + 文件名过滤，不必手打路径。模板含 `{class}` 时按勾选的 DOTA 类各调用一次 `worker.predict`（与 `eval_baseline_dota.py` 相同句式）；全勾 15 类才接近 mAP 穷举协议。点 Detect 才占 GPU。
+
+手工 45 张 val tile（每类 3 张）：[`docs/dota_v1_val_manual_tiles.md`](docs/dota_v1_val_manual_tiles.md)。
+
 
 ### 3.6 评估
 
