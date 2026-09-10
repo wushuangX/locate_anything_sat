@@ -156,6 +156,11 @@ bash shell/locate-anything-lora-visual-prompt.sh
 
 > **非 Hopper/Blackwell**：把脚本里 `--attn_implementation magi` 改为 `sdpa`，并把 `MAX_SEQ_LENGTH`/`MAX_NUM_TOKENS` 降到 ~4096。
 
+**几何增强长时程训练**（2×4090 / sdpa / 4K token / 基座+LDA / 默认 10 万步 / 保留最新 3 个 ckpt）：
+```bash
+bash shell/train-dota-geom-lora.sh   # META_PATH 默认 dota_v1_hbb_448_mix_v1_geom_train_only.json（五 key：0°/90°/180°/270°/hflip + color_jitter）
+```
+
 ### 3.3 Full SFT（需要更强域适配时）
 
 ```bash
