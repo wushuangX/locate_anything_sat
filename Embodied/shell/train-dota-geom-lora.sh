@@ -28,8 +28,7 @@ OUTPUT_DIR=${2:-${OUTPUT_DIR:-"work_dirs/dota_geom_lora_lda_2gpu_4k_100k_run1"}}
 NODE_RANK=${NODE_RANK:-0}
 PORT=${PORT:-29500}
 MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-
-MODEL_PATH=${MODEL_PATH:-"nvidia/LocateAnything-3B"}
+MODEL_PATH=${MODEL_PATH:-"/root/autodl-tmp/LocateAnything-3B"}
 META_PATH=${META_PATH:-"data/dota_v1_hbb_448_mix_v1/recipes/dota_v1_hbb_448_mix_v1_geom_train_only.json"}
 DEEPSPEED_CONFIG=${DEEPSPEED_CONFIG:-"deepspeed_configs/zero_stage1_config.json"}
 ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-sdpa}
