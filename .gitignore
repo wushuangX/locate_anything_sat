@@ -13,6 +13,8 @@ logs/
 images/*
 
 # Data
+Embodied/document/eval_viz_mix4k/
+
 !**/alpaca-data-conversation.json
 
 # Editor
