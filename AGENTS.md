@@ -275,7 +275,9 @@ Recipe JSON 样例（遥感 + 防遗忘混合）：
 }
 ```
 
-Recipe 字段：`annotation`（str/list，多文件合并）/ `root`（图像根）/ `repeat_time`（≥1 重复，<1 下采样）/ `data_augment`（resize 增强，多尺度，推荐对小目标开）。
+
+Recipe 字段：`annotation`（str/list，多文件合并）/ `root`（图像根）/ `repeat_time`（≥1 重复，<1 下采样）/ `data_augment`（resize 增强，多尺度，推荐对小目标开）/ `rotate`+`hflip`（配合离线几何 JSONL，加载时旋转翻转图像）/ `color_jitter`（亮度/对比度/饱和度抖动，strength 0.2）/ `visual_prompt`（视觉提示微调，与几何增强互斥）。
+
 
 > **随机性与可复现性约定（2026-09 决策）**：数据集生成（任务混合采样、负样本采样、train/val 划分）**不固定随机种子**，接受由此引入的随机波动，不为 seed 复现做任何工程投入。实验对比与追溯以**数据集版本目录 + metadata 统计**（实际任务构成、样本数、划分规模）为准，不追求逐 bit 复现数据文件。
 
@@ -302,7 +304,7 @@ python scripts/convert_dota_hbb_to_locany.py \
 - **train 9:1 内部验证**：按源图（非 tile）随机划分，输出 `*_train_mix_*.jsonl` 与 `*_internal_val_mix_*.jsonl`。
 - **官方 val 双渲染**：`*_test_t1_*.jsonl`（纯全类 T1，供 `eval_baseline_dota.py` 与 val 监控使用，**勿指向 mix 文件**）与 `*_test_mix_*.jsonl`（与 train 相同的混合发射）。
 - **`--reuse-tiles-from DIR`**：复用既有输出的 `tiles/`（缺失 tile 记入 `tiles_missing` 并跳过），新输出目录的 `tiles` 为指向 `DIR/tiles` 的符号链接；旧 `data/dota_v1_hbb_448/` 保持原样不动。
-- **Recipe 文件**：`{name}.json`（train_mix + internal_val_mix，供检视）、`{name}_train_only.json`（训练 `--meta_path`）、`{name}_internal_val.json`、`{name}_test_t1.json`、`{name}_test_mix.json`；无对应图像分区的文件不生成。
+- **几何增强 JSONL（`scripts/augment_locany_jsonl.py`）**：对既有 0° mix JSONL 离线生成 `*_rot90/_rot180/_rot270/_hflip.jsonl`（token 空间改写 `<box>` 坐标，像素不动），训练 recipe 用五个 key（`rotate`/`hflip` 字段）在加载时对图像做对应 PIL 变换；T5 指代样本（leftmost/…、single-instance prompt）自动丢弃；配合 `color_jitter: true` 做亮度/对比度/饱和度抖动。评估/Streamlit 仍只用 0° 文件。
 
 **小目标专用参考数据集**：AI-TOD（专为微小目标，8 类，目标均值 12.8px）、VisDrone（无人机视角密集小目标）、xView（超高分辨率）、DOTA（遥感旋转目标）、DIOR。优先用 AI-TOD / VisDrone 验证小目标能力。
 
@@ -362,8 +364,8 @@ ______________________________________________________________________
 
 ### 7.4 多尺度数据增强
 
-- recipe 中 `data_augment=true` 触发 resize 增强（`eaglevl/train/augmentation.py`），提升尺度鲁棒性，**对小目标尤其有效**（模拟不同航高/GSD）。
-- 可在 `augmentation.py` 扩展 RS 专属增强（旋转、翻转、亮度/对比度、随机裁剪），需保证框坐标同步变换。
+- recipe 中 `data_augment=true` 触发 resize 增强（`eaglevl/train/augmentation.py`），提升尺度鲁棒性，**对小目标尤其有效**（模拟不同航高/GSD）。448 tile 训练时保持 false。
+- **已实现几何 + 颜色增强**：`augmentation.py` 提供 `transform_box`/`apply_image_geometry`（rot90/rot180/rot270/hflip，token 空间与 PIL 变换逐像素对齐已验证）与 `apply_color_jitter`（亮度/对比度/饱和度）。流程：`scripts/augment_locany_jsonl.py` 离线生成四个几何 JSONL → recipe 五 key（`rotate`/`hflip`）加载时变换图像 → `color_jitter: true` 颜色抖动（按 idx 播种）。T5 指代样本不参与几何增强（位置词失效，rewriter 自动丢弃）。
 
 ### 7.5 小目标加权采样 [INFERENCE]
 
@@ -403,6 +405,8 @@ ______________________________________________________________________
 | 同上 | `--lda_bottleneck_dim` | 128 | LDA 瓶颈通道数（仅 `--use_lda true` 生效） |
 | Recipe JSON | `repeat_time` | 1.0 | 采样权重（≥1 重复，<1 下采样） |
 | Recipe JSON | `data_augment` | false | resize 多尺度增强（小目标推荐开） |
+| Recipe JSON | `rotate` / `hflip` | 0 / false | 加载时对图像做 90° 旋转/水平翻转（配 `augment_locany_jsonl.py` 离线 JSONL；与 `visual_prompt` 互斥） |
+| Recipe JSON | `color_jitter` | false | 亮度/对比度/饱和度抖动（PIL ImageEnhance，strength 固定 0.2，按样本 idx 播种可复现） |
 | Recipe JSON | `visual_prompt` | false | 视觉提示微调（裁剪作 query） |
 | `deepspeed_configs/` | config | — | zero_stage1（通信省）/ zero_stage2（显存省，推荐 full SFT） |
 

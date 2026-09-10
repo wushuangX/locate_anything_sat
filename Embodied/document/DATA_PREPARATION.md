@@ -104,7 +104,9 @@ The recipe file is a single JSON object where each key is a dataset name and the
 | `annotation` | str or list[str] | *required* | Path(s) to JSONL annotation files. Multiple files are merged. |
 | `root` | str | `""` | Root directory for resolving relative image/video paths. |
 | `repeat_time` | float | `1.0` | Sampling weight. `>=1`: repeat the dataset N epochs. `<1`: downsample (e.g., `0.5` uses 50% of data). |
-| `data_augment` | bool | `false` | Apply resize augmentation during training. |
+| `rotate` | int | `0` | Rotate loaded images by 90° steps CCW (`0|90|180|270`). Pair with the offline geometry JSONL (see DOTA section). Incompatible with `visual_prompt`. |
+| `hflip` | bool | `false` | Horizontally flip loaded images (after `rotate`). Pair with the offline `_hflip.jsonl`. Incompatible with `visual_prompt`. |
+| `color_jitter` | bool | `false` | Photometric jitter (brightness/contrast/saturation, factor ±0.2, no hue) applied after geometry. Deterministic per sample index. |
 
 ---
 
@@ -274,6 +276,37 @@ The generated train-only recipe is passed directly to training:
 ```bash
 export META_PATH=/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1/recipes/dota_v1_hbb_448_mix_v1_train_only.json
 ```
+
+### Geometric JSONL Augmentation (rot90 / rot180 / rot270 / hflip)
+
+Use `scripts/augment_locany_jsonl.py` to expand a 0-degree mix JSONL into four geometric variants **without touching pixels** — only `<box>` token coordinates are rewritten in `[0, 1000]` space:
+
+```bash
+cd Embodied
+python scripts/augment_locany_jsonl.py \
+  --input /data/.../annotations/DOTA-v1.0_train_mix_hbb_448.jsonl \
+  --output-dir /data/.../annotations \
+  --stem DOTA-v1.0_train_mix_hbb_448 \
+  --ops rot90,rot180,rot270,hflip
+```
+
+Notes:
+
+- T5 referring samples (single-instance prompts and `the leftmost/rightmost/topmost/bottommost` phrases) are dropped — spatial wording breaks under rotation/flip. `<box>none</box>` answers pass through unchanged.
+- The `image` field keeps pointing at the 0-degree pixels; the training loader applies the matching PIL transform on load, driven by recipe fields:
+
+```json
+{
+  "dota_train_r0":    {"annotation": ".../DOTA-v1.0_train_mix_hbb_448.jsonl",       "root": ".../dota_v1_hbb_448_mix_v1", "rotate": 0,   "hflip": false, "color_jitter": true},
+  "dota_train_r90":   {"annotation": ".../DOTA-v1.0_train_mix_hbb_448_rot90.jsonl", "root": ".../dota_v1_hbb_448_mix_v1", "rotate": 90,  "hflip": false, "color_jitter": true},
+  "dota_train_r180":  {"annotation": ".../DOTA-v1.0_train_mix_hbb_448_rot180.jsonl","root": ".../dota_v1_hbb_448_mix_v1", "rotate": 180, "hflip": false, "color_jitter": true},
+  "dota_train_r270":  {"annotation": ".../DOTA-v1.0_train_mix_hbb_448_rot270.jsonl","root": ".../dota_v1_hbb_448_mix_v1", "rotate": 270, "hflip": false, "color_jitter": true},
+  "dota_train_hflip": {"annotation": ".../DOTA-v1.0_train_mix_hbb_448_hflip.jsonl", "root": ".../dota_v1_hbb_448_mix_v1", "rotate": 0,   "hflip": true,  "color_jitter": true}
+}
+```
+
+- Keep `data_augment: false` for 448 tiles (resize is unnecessary and unpinned there). Eval, `test_t1`, and Streamlit stay on the original 0-degree JSONL only.
+- Smoke: `python scripts/smoke_augment_locany_jsonl.py` (transform identities, T5 drop, rot90 box math, image ops).
 
 ---
 
