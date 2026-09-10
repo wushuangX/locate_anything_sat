@@ -12,7 +12,7 @@ Image augmentation module for training-time data augmentation.
 """
 
 import random
-from PIL import Image
+from PIL import Image, ImageEnhance
 from typing import Union, List
 
 
@@ -118,3 +118,90 @@ def apply_resize_augmentation_to_list(
         )
         for img in images
     ]
+
+
+def transform_xy(x: int, y: int, op: str) -> tuple:
+    """Map one normalized [0, 1000] coordinate through a geometry op.
+
+    Ops match the PIL transposes applied by `apply_image_geometry`:
+      rot90  = Transpose.ROTATE_90  (90° CCW): (x, y) -> (y, 1000 - x)
+      rot180 = Transpose.ROTATE_180:           (x, y) -> (1000 - x, 1000 - y)
+      rot270 = Transpose.ROTATE_270 (90° CW):  (x, y) -> (1000 - y, x)
+      hflip  = Transpose.FLIP_LEFT_RIGHT:      (x, y) -> (1000 - x, y)
+    """
+    if op == "rot90":
+        return (y, 1000 - x)
+    if op == "rot180":
+        return (1000 - x, 1000 - y)
+    if op == "rot270":
+        return (1000 - y, x)
+    if op == "hflip":
+        return (1000 - x, y)
+    raise ValueError(f"Unknown geometry op {op!r}; expected rot90/rot180/rot270/hflip")
+
+
+def transform_box(x1: int, y1: int, x2: int, y2: int, op: str) -> tuple:
+    """Transform an axis-aligned box in [0, 1000] token space.
+
+    Maps all four corners through `transform_xy`, re-normalizes to
+    (min, max) per axis, clamps to [0, 1000], and nudges degenerate
+    edges by +1 so the box keeps nonzero extent.
+    """
+    corners = [
+        transform_xy(cx, cy, op)
+        for cx, cy in ((x1, y1), (x2, y1), (x1, y2), (x2, y2))
+    ]
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    nx1, nx2 = max(0, min(1000, min(xs))), max(0, min(1000, max(xs)))
+    ny1, ny2 = max(0, min(1000, min(ys))), max(0, min(1000, max(ys)))
+    if nx2 == nx1:
+        nx2 = min(1000, nx1 + 1)
+    if ny2 == ny1:
+        ny2 = min(1000, ny1 + 1)
+    return (nx1, ny1, nx2, ny2)
+
+
+def apply_image_geometry(
+    image: Image.Image,
+    rotate: int = 0,
+    hflip: bool = False,
+) -> Image.Image:
+    """Rotate/flip a PIL image to match a token-space geometry op.
+
+    `rotate` must be 0, 90, 180, or 270 (degrees CCW, matching
+    Image.Transpose.ROTATE_*); the flip is applied after the rotation.
+    With rotate=0 and hflip=False the same image object is returned.
+    """
+    if rotate not in (0, 90, 180, 270):
+        raise ValueError(f"rotate must be one of 0|90|180|270, got {rotate!r}")
+    if rotate != 0:
+        image = image.transpose(
+            {
+                90: Image.Transpose.ROTATE_90,
+                180: Image.Transpose.ROTATE_180,
+                270: Image.Transpose.ROTATE_270,
+            }[rotate]
+        )
+    if hflip:
+        image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    return image
+
+
+def apply_color_jitter(
+    image: Image.Image,
+    enabled: bool = False,
+    strength: float = 0.2,
+) -> Image.Image:
+    """Photometric jitter: brightness, contrast, saturation (no hue).
+
+    Each factor is drawn from uniform(1 - strength, 1 + strength).
+    Returns the input object unchanged when disabled. Uses the
+    module-level `random`, which the training dataset seeds per index.
+    """
+    if not enabled:
+        return image
+    for enhancer in (ImageEnhance.Brightness, ImageEnhance.Contrast, ImageEnhance.Color):
+        factor = random.uniform(1 - strength, 1 + strength)
+        image = enhancer(image).enhance(factor)
+    return image

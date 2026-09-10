@@ -67,7 +67,11 @@ from transformers import TrainerCallback
 from eaglevl.train.tools import (SaveCheckpointCallback, MemoryLoggerCallback, 
                                   MilestoneCheckpointCallback, get_last_checkpoint_guard, 
                                   load_config, process_multimodal_sample)
-from eaglevl.train.augmentation import apply_resize_augmentation
+from eaglevl.train.augmentation import (
+    apply_color_jitter,
+    apply_image_geometry,
+    apply_resize_augmentation,
+)
 from dotenv import load_dotenv
 load_dotenv()
 from transformers.trainer_pt_utils import LabelSmoother
@@ -218,6 +222,19 @@ class LazySupervisedDatasetMTP(Dataset):
         self.block_size = block_size
         self.data_augment = meta.get("data_augment", False)
         self.visual_prompt = bool(meta.get("visual_prompt", False))
+        self.rotate = int(meta.get("rotate", 0) or 0)
+        self.hflip = bool(meta.get("hflip", False))
+        self.color_jitter = bool(meta.get("color_jitter", False))
+        if self.rotate not in (0, 90, 180, 270):
+            raise ValueError(
+                f"[Dataset] {self.ds_name} recipe 'rotate' must be 0|90|180|270, "
+                f"got {self.rotate}"
+            )
+        if self.visual_prompt and (self.rotate != 0 or self.hflip):
+            raise ValueError(
+                f"[Dataset] {self.ds_name} geometry (rotate/hflip) is incompatible "
+                f"with visual_prompt: crops come from the unrotated file"
+            )
 
         ann_paths = meta["annotation"]
         if not isinstance(ann_paths, (list, tuple)):
@@ -518,7 +535,14 @@ class LazySupervisedDatasetMTP(Dataset):
         if image_inputs is not None:
             image_inputs = [
                 apply_resize_augmentation(
-                    img, data_augment=self.data_augment,
+                    apply_color_jitter(
+                        apply_image_geometry(
+                            img, rotate=self.rotate, hflip=self.hflip
+                        ),
+                        enabled=self.color_jitter,
+                        strength=0.2,
+                    ),
+                    data_augment=self.data_augment,
                     min_long_edge=640, max_long_edge=2560, augment_prob=0.5
                 ) for img in image_inputs
             ]
