@@ -466,7 +466,7 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
 
             if generation_mode == 'hybrid':
                 # Hybrid AR phase: detect box boundaries to switch back to MTP
-                if token_val == box_end_token_id:
+                if token_val == box_end_token_id or token_val == self.token_ids.get("obb_end_token_id"):
                     out_type = 'box_end_ar'
                 elif coord_start_token_id <= token_val <= coord_end_token_id or token_val == none_token_id:
                     out_type = 'coord_ar'
@@ -481,77 +481,83 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
 
 
         # Generate loop
-        while generated.size(1) < total_gen_length:
-            iter_round += 1
+        inner = self.language_model.model
+        old_bs = inner.block_size
+        inner.block_size = n_future_tokens
+        try:
+            while generated.size(1) < total_gen_length:
+                iter_round += 1
 
-            # Step 1: Prepare inputs
-            if use_mtp:
-                prepare_inputs = _prepare_inputs_in_mtp(generated)
-            else:
-                prepare_inputs = _prepare_input_in_ar(generated)
+                # Step 1: Prepare inputs
+                if use_mtp:
+                    prepare_inputs = _prepare_inputs_in_mtp(generated)
+                else:
+                    prepare_inputs = _prepare_input_in_ar(generated)
 
-            if iter_round == 1:
-                prepare_inputs.update({
-                    'visual_features': vit_embeds,
-                    'image_token_index': self.config.image_token_index,
-                })
+                if iter_round == 1:
+                    prepare_inputs.update({
+                        'visual_features': vit_embeds,
+                        'image_token_index': self.config.image_token_index,
+                    })
 
-            # Step 2: Model forward & update KV cache
-            with torch.no_grad():
-                outputs = self.language_model(**prepare_inputs)
+                # Step 2: Model forward & update KV cache
+                with torch.no_grad():
+                    outputs = self.language_model(**prepare_inputs)
 
-            past_key_values = tuple(
-                (kv[0][:, :, :generated.shape[1], :], kv[1][:, :, :generated.shape[1], :])
-                for kv in outputs.past_key_values
-            )
+                past_key_values = tuple(
+                    (kv[0][:, :, :generated.shape[1], :], kv[1][:, :, :generated.shape[1], :])
+                    for kv in outputs.past_key_values
+                )
 
-            # Step 3: Sample tokens
-            if use_mtp:
-                out_type, out_token = _sample_token_in_mtp(generated, outputs)
-            else:
-                out_type, out_token = _sample_token_in_ar(generated, outputs)
+                # Step 3: Sample tokens
+                if use_mtp:
+                    out_type, out_token = _sample_token_in_mtp(generated, outputs)
+                else:
+                    out_type, out_token = _sample_token_in_ar(generated, outputs)
+
+                if verbose:
+                    sampling_history.append(('ar' if 'ar' in out_type else 'mtp', tokenizer.decode(out_token, skip_special_tokens=False)))
+
+                generated = torch.cat([generated, out_token.unsqueeze(0)], dim=1)
+
+                # Step 4: Mode switching & termination
+                if out_type == 'im_end':
+                    break
+
+                if generation_mode == 'hybrid':
+                    if out_type == 'error_box':
+                        use_mtp = False
+                        switch_to_ar_count += 1
+                    elif out_type == 'box_end_ar':
+                        use_mtp = True
+                # fast mode: use_mtp stays True always
+                # slow mode: use_mtp stays False always
+
+                if prefill_time is None:
+                    prefill_time = time.time() - start_time
+
+            # Decode and return
+            generated_ids = generated[:, seq_len:]
+            response = tokenizer.batch_decode(generated_ids, skip_special_tokens=False)
 
             if verbose:
-                sampling_history.append(('ar' if 'ar' in out_type else 'mtp', tokenizer.decode(out_token, skip_special_tokens=False)))
+                end_time = time.time()
+                num_tokens = generated_ids.size(1)
+                num_boxes = response[0].count("<box>")
+                total_time = end_time - start_time
 
-            generated = torch.cat([generated, out_token.unsqueeze(0)], dim=1)
+                out_info =  f"\nStatistic Info, num_tokens={num_tokens}; " + \
+                        f"generate_time(s)={total_time:.4f}; " + \
+                        f"tps={(num_tokens / total_time):.4f}; " + \
+                        f"forward_step={iter_round}; " + \
+                        f"num_boxes={num_boxes}; " + \
+                        f"bps={(num_boxes / total_time):.4f}; " + \
+                        f"prefill_time={(prefill_time):.4f}; " + \
+                        f"switch_to_ar={switch_to_ar_count}\n"
+                print(out_info)
 
-            # Step 4: Mode switching & termination
-            if out_type == 'im_end':
-                break
+                return response[0], sampling_history, out_info
 
-            if generation_mode == 'hybrid':
-                if out_type == 'error_box':
-                    use_mtp = False
-                    switch_to_ar_count += 1
-                elif out_type == 'box_end_ar':
-                    use_mtp = True
-            # fast mode: use_mtp stays True always
-            # slow mode: use_mtp stays False always
-
-            if prefill_time is None:
-                prefill_time = time.time() - start_time
-
-        # Decode and return
-        generated_ids = generated[:, seq_len:]
-        response = tokenizer.batch_decode(generated_ids, skip_special_tokens=False)
-
-        if verbose:
-            end_time = time.time()
-            num_tokens = generated_ids.size(1)
-            num_boxes = response[0].count("<box>")
-            total_time = end_time - start_time
-
-            out_info =  f"\nStatistic Info, num_tokens={num_tokens}; " + \
-                    f"generate_time(s)={total_time:.4f}; " + \
-                    f"tps={(num_tokens / total_time):.4f}; " + \
-                    f"forward_step={iter_round}; " + \
-                    f"num_boxes={num_boxes}; " + \
-                    f"bps={(num_boxes / total_time):.4f}; " + \
-                    f"prefill_time={(prefill_time):.4f}; " + \
-                    f"switch_to_ar={switch_to_ar_count}\n"
-            print(out_info)
-
-            return response[0], sampling_history, out_info
-
-        return response[0]
+            return response[0]
+        finally:
+            inner.block_size = old_bs

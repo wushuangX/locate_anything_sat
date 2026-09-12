@@ -68,6 +68,9 @@ class LocateAnythingConfig(PretrainedConfig):
             ref_start_token_id=151672,
             ref_end_token_id=151673,
             none_token_id=4064,
+            obb_start_token_id=None,
+            obb_end_token_id=None,
+            obb_block_size=7,
             **kwargs):
         super().__init__(**kwargs)
 
@@ -106,6 +109,9 @@ class LocateAnythingConfig(PretrainedConfig):
         self.ref_start_token_id = ref_start_token_id
         self.ref_end_token_id = ref_end_token_id
         self.none_token_id = none_token_id
+        self.obb_start_token_id = obb_start_token_id
+        self.obb_end_token_id = obb_end_token_id
+        self.obb_block_size = obb_block_size
 
     def to_dict(self):
         """
@@ -130,6 +136,9 @@ class LocateAnythingConfig(PretrainedConfig):
         output['ref_start_token_id'] = self.ref_start_token_id
         output['ref_end_token_id'] = self.ref_end_token_id
         output['none_token_id'] = self.none_token_id
+        output['obb_start_token_id'] = self.obb_start_token_id
+        output['obb_end_token_id'] = self.obb_end_token_id
+        output['obb_block_size'] = self.obb_block_size
         output['_attn_implementation'] = self._attn_implementation
         if hasattr(self, '_attn_implementation_autoset'):
             output['_attn_implementation_autoset'] = self._attn_implementation_autoset

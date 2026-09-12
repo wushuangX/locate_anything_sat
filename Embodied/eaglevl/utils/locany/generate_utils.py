@@ -31,6 +31,8 @@ def get_token_ids_from_config(config) -> Dict[str, int]:
     token_ids['ref_start_token_id'] = getattr(config, 'ref_start_token_id', 151672)
     token_ids['ref_end_token_id'] = getattr(config, 'ref_end_token_id', 151673)
     token_ids['none_token_id'] = getattr(config, 'none_token_id', 4064)
+    token_ids['obb_start_token_id'] = getattr(config, 'obb_start_token_id', None)
+    token_ids['obb_end_token_id'] = getattr(config, 'obb_end_token_id', None)
     
     # Get from text_config
     text_config = getattr(config, 'text_config', None)
@@ -181,11 +183,15 @@ def sample_tokens(
         if decoded_box is not None:
             box_avg.append(decoded_box)
         else:
-            out_ref = decode_ref(logits[b], probs[b], token_ids)
-            if out_ref is not None:
-                box_avg.append(torch.tensor(out_ref, dtype=x0.dtype, device=x0.device))
+            decoded_obb = decode_obb_greedy(probs[b], token_ids)
+            if decoded_obb is not None:
+                box_avg.append(decoded_obb)
             else:
-                box_avg.append(fallback_box)
+                out_ref = decode_ref(logits[b], probs[b], token_ids)
+                if out_ref is not None:
+                    box_avg.append(torch.tensor(out_ref, dtype=x0.dtype, device=x0.device))
+                else:
+                    box_avg.append(fallback_box)
 
     box_avg = torch.stack(box_avg)
 
@@ -359,6 +365,32 @@ def decode_bbox_avg(
     end_t = torch.tensor([box_end_token_id], dtype=final_coords.dtype, device=device)
 
     return torch.cat([start_t, final_coords, end_t])
+
+def decode_obb_greedy(probs, token_ids: Dict[str, int]) -> Optional[torch.Tensor]:
+    obb_start_token_id = token_ids.get("obb_start_token_id")
+    obb_end_token_id = token_ids.get("obb_end_token_id")
+    if obb_start_token_id is None or obb_end_token_id is None:
+        return None
+    if probs.dim() != 2 or probs.shape[0] < 7:
+        return None
+    if int(probs[0].argmax().item()) != int(obb_start_token_id):
+        return None
+    coord_start_token_id = token_ids["coord_start_token_id"]
+    coord_end_token_id = token_ids["coord_end_token_id"]
+    coords = []
+    for i in range(1, 6):
+        coord_probs = probs[i, coord_start_token_id : coord_end_token_id + 1]
+        if coord_probs.numel() == 0:
+            return None
+        coords.append(int(coord_start_token_id + int(coord_probs.argmax().item())))
+    if int(probs[6].argmax().item()) != int(obb_end_token_id):
+        return None
+    return torch.tensor(
+        [int(obb_start_token_id), *coords, int(obb_end_token_id)],
+        dtype=torch.long,
+        device=probs.device,
+    )
+
     
 
 def decode_ref(
@@ -420,7 +452,7 @@ def handle_pattern(x0, token_ids: Dict[str, int], generation_mode: str = 'hybrid
     coord_end_token_id = token_ids['coord_end_token_id']
     ref_end_token_id = token_ids['ref_end_token_id']
     
-    x0 = x0.tolist()
+    x0 = x0.tolist() if hasattr(x0, "tolist") else list(x0)
 
     if x0[0] == null_token_id:
         return {
@@ -486,6 +518,43 @@ def handle_pattern(x0, token_ids: Dict[str, int], generation_mode: str = 'hybrid
                     "need_switch_to_ar": True,
                     "is_terminal": False,
                 }
+    obb_start_token_id = token_ids.get("obb_start_token_id")
+    obb_end_token_id = token_ids.get("obb_end_token_id")
+    if obb_start_token_id is not None and x0[0] == obb_start_token_id:
+        if len(x0) >= 2 and x0[:2] == [obb_start_token_id, none_token_id]:
+            return {
+                "type": "empty_box",
+                "tokens": [obb_start_token_id, none_token_id, obb_end_token_id],
+                "need_switch_to_ar": False,
+                "is_terminal": False,
+            }
+        coord_ix = 1
+        for coord in x0[1:6]:
+            if coord_start_token_id <= coord <= coord_end_token_id:
+                coord_ix += 1
+            else:
+                break
+        if len(x0) >= 7 and coord_ix == 6 and x0[6] == obb_end_token_id:
+            return {
+                "type": "coord_obb",
+                "tokens": x0[:7],
+                "need_switch_to_ar": False,
+                "is_terminal": False,
+            }
+        if generation_mode == "fast":
+            return {
+                "type": "coord_obb",
+                "tokens": x0,
+                "need_switch_to_ar": False,
+                "is_terminal": False,
+            }
+        return {
+            "type": "error_box",
+            "tokens": x0[:coord_ix],
+            "need_switch_to_ar": True,
+            "is_terminal": False,
+        }
+
 
     else:
         for i, token in enumerate(x0):

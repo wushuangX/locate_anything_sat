@@ -200,6 +200,7 @@ class LocateAnythingWorker:
         visual_prompt_box: Optional[Sequence[float]] = None,
         visual_prompt_box_format: str = "normalized_1000",
         replace_text: Optional[str] = None,
+        n_future_tokens: Optional[int] = None,
     ) -> dict:
         messages = self._build_messages(
             image=image,
@@ -224,6 +225,9 @@ class LocateAnythingWorker:
 
         top_k_for_generate = None if top_k <= 0 else top_k
 
+        generate_kw = {}
+        if n_future_tokens is not None:
+            generate_kw["n_future_tokens"] = n_future_tokens
         response = self.model.generate(
             pixel_values=pixel_values,
             input_ids=input_ids,
@@ -239,6 +243,7 @@ class LocateAnythingWorker:
             top_k=top_k_for_generate,
             repetition_penalty=repetition_penalty,
             verbose=verbose,
+            **generate_kw,
         )
 
         result = {"answer": response[0] if isinstance(response, tuple) else response}
@@ -263,6 +268,7 @@ class LocateAnythingWorker:
         visual_prompt_box: Optional[Sequence[float]] = None,
         visual_prompt_box_format: str = "normalized_1000",
         replace_text: Optional[str] = None,
+        n_future_tokens: Optional[int] = None,
     ) -> dict:
         """
         Run a single perception query.
@@ -289,7 +295,7 @@ class LocateAnythingWorker:
             dict with keys: "answer", "stats" (optional), "history" (optional).
         """
         has_visual_prompt = visual_prompt is not None or visual_prompt_box is not None
-        if self.use_batch_runtime and not has_visual_prompt:
+        if self.use_batch_runtime and not has_visual_prompt and n_future_tokens is None:
             return self.predict_batch(
                 [(image, question)],
                 generation_mode=generation_mode,
@@ -315,6 +321,7 @@ class LocateAnythingWorker:
             visual_prompt_box=visual_prompt_box,
             visual_prompt_box_format=visual_prompt_box_format,
             replace_text=replace_text,
+            n_future_tokens=n_future_tokens,
         )
 
     @torch.no_grad()
@@ -426,6 +433,12 @@ class LocateAnythingWorker:
         prompt = f"Locate all the instances that matches the following description: {cats}."
         return self.predict(image, prompt, **kwargs)
 
+    def detect_oriented(self, image: Image.Image, categories: list[str], **kwargs) -> dict:
+        cats = "</c>".join(categories)
+        prompt = f"Locate all oriented instances that match the following description: {cats}."
+        kwargs.setdefault("n_future_tokens", 7)
+        return self.predict(image, prompt, **kwargs)
+
     def detect_visual_prompt(
         self,
         image: Image.Image,
@@ -530,6 +543,27 @@ class LocateAnythingWorker:
                 "y": y / 1000 * image_height,
             })
         return points
+
+    @staticmethod
+    def parse_oriented_answer(answer: str) -> list[dict]:
+        """Parse OBB tokens; coordinates stay in [0, 1000] token space."""
+        if re.search(r"<obb>[Nn]one</obb>", answer):
+            return []
+        boxes = []
+        for m in re.finditer(
+            r"<ref>(.*?)</ref><obb><(\d+)><(\d+)><(\d+)><(\d+)><(\d+)></obb>",
+            answer,
+        ):
+            label, cx, cy, w, h, th = m.groups()
+            boxes.append({
+                "label": label,
+                "cx": int(cx),
+                "cy": int(cy),
+                "w": int(w),
+                "h": int(h),
+                "theta_q": int(th),
+            })
+        return boxes
 
 
 # --------------- Usage Example ---------------
