@@ -33,14 +33,15 @@ _repo_root = str(Path(__file__).resolve().parent.parent)
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
-from eaglevl.train.augmentation import transform_box
+from eaglevl.train.augmentation import GEOM_OPS, geom_op_atoms, transform_box, transform_obb
 
-# Same pattern as scripts/eval_baseline_dota.py
 BOX_RE = re.compile(r"<ref>(.*?)</ref><box><(\d+)><(\d+)><(\d+)><(\d+)></box>")
 NONE_RE = re.compile(r"<box>[Nn]one</box>")
+OBB_RE = re.compile(r"<ref>(.*?)</ref><obb><(\d+)><(\d+)><(\d+)><(\d+)><(\d+)></obb>")
+OBB_NONE_RE = re.compile(r"<obb>[Nn]one</obb>", re.IGNORECASE)
 
-# Same drop predicates as T5 in scripts/convert_dota_hbb_to_locany.py
-SINGLE_PROMPT_PREFIX = "Locate a single instance that matches the following description:"
+HBB_SINGLE_PROMPT_PREFIX = "Locate a single instance that matches the following description:"
+OBB_SINGLE_PROMPT_PREFIX = "Locate a single oriented instance that matches the following description:"
 T5_PREDICATE_SUBSTRINGS = (
     "the leftmost ",
     "the rightmost ",
@@ -48,28 +49,43 @@ T5_PREDICATE_SUBSTRINGS = (
     "the bottommost ",
 )
 
-VALID_OPS = ("rot90", "rot180", "rot270", "hflip")
+VALID_OPS = tuple(GEOM_OPS.keys())
 
 
 def is_t5(human: str) -> bool:
     """True for referring samples whose spatial wording breaks under geometry."""
-    if human.startswith(SINGLE_PROMPT_PREFIX):
+    if human.startswith(HBB_SINGLE_PROMPT_PREFIX) or human.startswith(OBB_SINGLE_PROMPT_PREFIX):
         return True
     return any(s in human for s in T5_PREDICATE_SUBSTRINGS)
 
 
 def rewrite_gpt(gpt: str, op: str) -> str:
-    """Transform every <ref>...</ref><box>...</box> pair for geometry op."""
+    """Transform every box/obb block for a geometry op. Human text is unchanged."""
+    if OBB_RE.search(gpt) or OBB_NONE_RE.search(gpt):
+        if not OBB_RE.search(gpt) and OBB_NONE_RE.search(gpt):
+            return gpt
+
+        def _rebuild_obb(m: re.Match) -> str:
+            cx, cy, w, h, th = transform_obb(
+                int(m.group(2)), int(m.group(3)), int(m.group(4)),
+                int(m.group(5)), int(m.group(6)), op,
+            )
+            return f"<ref>{m.group(1)}</ref><obb><{cx}><{cy}><{w}><{h}><{th}></obb>"
+
+        return OBB_RE.sub(_rebuild_obb, gpt)
+
     if not BOX_RE.search(gpt) and NONE_RE.search(gpt):
         return gpt
 
-    def _rebuild(m: re.Match) -> str:
-        x1, y1, x2, y2 = transform_box(
-            int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)), op
-        )
+    atoms = geom_op_atoms(op)
+
+    def _rebuild_box(m: re.Match) -> str:
+        x1, y1, x2, y2 = (int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)))
+        for atom in atoms:
+            x1, y1, x2, y2 = transform_box(x1, y1, x2, y2, atom)
         return f"<ref>{m.group(1)}</ref><box><{x1}><{y1}><{x2}><{y2}></box>"
 
-    return BOX_RE.sub(_rebuild, gpt)
+    return BOX_RE.sub(_rebuild_box, gpt)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -80,7 +96,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--ops",
         default="rot90,rot180,rot270,hflip",
-        help="Comma-separated subset of rot90,rot180,rot270,hflip",
+        help="Comma-separated geom ops: rot90,rot180,rot270,hflip,hflip_rot90,hflip_rot180,hflip_rot270",
     )
     return p.parse_args(argv)
 

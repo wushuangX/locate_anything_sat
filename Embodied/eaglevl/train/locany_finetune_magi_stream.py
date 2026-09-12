@@ -72,6 +72,7 @@ from eaglevl.train.augmentation import (
     apply_color_jitter,
     apply_image_geometry,
     apply_resize_augmentation,
+    resolve_geom_op,
 )
 from dotenv import load_dotenv
 load_dotenv()
@@ -231,15 +232,18 @@ class LazySupervisedDatasetMTP(Dataset):
         self.visual_prompt = bool(meta.get("visual_prompt", False))
         self.rotate = int(meta.get("rotate", 0) or 0)
         self.hflip = bool(meta.get("hflip", False))
-        self.color_jitter = bool(meta.get("color_jitter", False))
+        self.flip_first = bool(meta.get("flip_before_rotate", False))
+        self.geom_op = str(meta.get("geom_op") or "").strip()
+        if self.geom_op:
+            self.rotate, self.hflip, self.flip_first = resolve_geom_op(self.geom_op)
         if self.rotate not in (0, 90, 180, 270):
             raise ValueError(
                 f"[Dataset] {self.ds_name} recipe 'rotate' must be 0|90|180|270, "
                 f"got {self.rotate}"
             )
-        if self.visual_prompt and (self.rotate != 0 or self.hflip):
+        if self.visual_prompt and (self.rotate != 0 or self.hflip or self.geom_op):
             raise ValueError(
-                f"[Dataset] {self.ds_name} geometry (rotate/hflip) is incompatible "
+                f"[Dataset] {self.ds_name} geometry (rotate/hflip/geom_op) is incompatible "
                 f"with visual_prompt: crops come from the unrotated file"
             )
 
@@ -552,7 +556,10 @@ class LazySupervisedDatasetMTP(Dataset):
                 apply_resize_augmentation(
                     apply_color_jitter(
                         apply_image_geometry(
-                            img, rotate=self.rotate, hflip=self.hflip
+                            img,
+                            rotate=self.rotate,
+                            hflip=self.hflip,
+                            flip_first=self.flip_first,
                         ),
                         enabled=self.color_jitter,
                         strength=0.2,

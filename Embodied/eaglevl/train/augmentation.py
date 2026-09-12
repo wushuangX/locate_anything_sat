@@ -13,7 +13,29 @@ Image augmentation module for training-time data augmentation.
 
 import random
 from PIL import Image, ImageEnhance
-from typing import Union, List
+
+from typing import Union, List, Tuple
+
+# D4 extras (identity is the 0° JSONL). hflip_* = horizontal flip FIRST, then rotate.
+GEOM_OPS: dict[str, tuple[int, bool, bool]] = {
+    "rot90": (90, False, False),
+    "rot180": (180, False, False),
+    "rot270": (270, False, False),
+    "hflip": (0, True, False),
+    "hflip_rot90": (90, True, True),
+    "hflip_rot180": (180, True, True),
+    "hflip_rot270": (270, True, True),
+}
+
+_GEOM_ATOMS: dict[str, tuple[str, ...]] = {
+    "rot90": ("rot90",),
+    "rot180": ("rot180",),
+    "rot270": ("rot270",),
+    "hflip": ("hflip",),
+    "hflip_rot90": ("hflip", "rot90"),
+    "hflip_rot180": ("hflip", "rot180"),
+    "hflip_rot270": ("hflip", "rot270"),
+}
 
 
 def resize_image_keep_aspect_ratio(
@@ -161,31 +183,85 @@ def transform_box(x1: int, y1: int, x2: int, y2: int, op: str) -> tuple:
         ny2 = min(1000, ny1 + 1)
     return (nx1, ny1, nx2, ny2)
 
+def resolve_geom_op(op: str) -> tuple[int, bool, bool]:
+    if op not in GEOM_OPS:
+        raise ValueError(f"Unknown geom_op {op!r}; expected one of {sorted(GEOM_OPS)}")
+    return GEOM_OPS[op]
+
+
+def geom_op_atoms(op: str) -> tuple[str, ...]:
+    if op not in _GEOM_ATOMS:
+        raise ValueError(f"Unknown geom_op {op!r}; expected one of {sorted(_GEOM_ATOMS)}")
+    return _GEOM_ATOMS[op]
+
+
+def transform_obb(
+    cx: int, cy: int, w: int, h: int, th_q: int, op: str
+) -> tuple[int, int, int, int, int]:
+    """Transform a LE90 OBB in [0, 1000] token space through a D4 geom_op."""
+    from eaglevl.train.obb_geometry import le90_canonicalize, theta_deg_from_q, theta_q_from_deg
+
+    ncx, ncy = int(cx), int(cy)
+    wf, hf = float(w), float(h)
+    theta = theta_deg_from_q(int(th_q))
+    for atom in geom_op_atoms(op):
+        ncx, ncy = transform_xy(ncx, ncy, atom)
+        if atom == "hflip":
+            wf, hf, theta = le90_canonicalize(wf, hf, -theta)
+        elif atom == "rot90":
+            wf, hf, theta = le90_canonicalize(wf, hf, theta + 90.0)
+        elif atom == "rot180":
+            wf, hf, theta = le90_canonicalize(wf, hf, theta + 180.0)
+        elif atom == "rot270":
+            wf, hf, theta = le90_canonicalize(wf, hf, theta + 270.0)
+        else:
+            raise ValueError(f"Unknown geometry atom {atom!r}")
+    ncx = max(0, min(1000, int(ncx)))
+    ncy = max(0, min(1000, int(ncy)))
+    wf, hf, theta = le90_canonicalize(wf, hf, theta)
+    w_q = max(1, min(1000, int(round(wf))))
+    h_q = max(1, min(1000, int(round(hf))))
+    if h_q > w_q:
+        w_q, h_q, theta = le90_canonicalize(float(w_q), float(h_q), theta)
+        w_q = max(1, min(1000, int(round(w_q))))
+        h_q = max(1, min(1000, int(round(h_q))))
+    return ncx, ncy, int(w_q), int(h_q), theta_q_from_deg(theta)
 
 def apply_image_geometry(
     image: Image.Image,
     rotate: int = 0,
     hflip: bool = False,
+    flip_first: bool = False,
 ) -> Image.Image:
     """Rotate/flip a PIL image to match a token-space geometry op.
 
     `rotate` must be 0, 90, 180, or 270 (degrees CCW, matching
-    Image.Transpose.ROTATE_*); the flip is applied after the rotation.
+    Image.Transpose.ROTATE_*). Default order is rotate then hflip (HBB keys).
+    `flip_first=True` applies hflip before rotate (OBB D4 `hflip_rot*` keys).
     With rotate=0 and hflip=False the same image object is returned.
     """
     if rotate not in (0, 90, 180, 270):
         raise ValueError(f"rotate must be one of 0|90|180|270, got {rotate!r}")
-    if rotate != 0:
-        image = image.transpose(
+
+    def _rotate(img: Image.Image) -> Image.Image:
+        if rotate == 0:
+            return img
+        return img.transpose(
             {
                 90: Image.Transpose.ROTATE_90,
                 180: Image.Transpose.ROTATE_180,
                 270: Image.Transpose.ROTATE_270,
             }[rotate]
         )
-    if hflip:
-        image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-    return image
+
+    def _hflip(img: Image.Image) -> Image.Image:
+        if not hflip:
+            return img
+        return img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+
+    if flip_first:
+        return _rotate(_hflip(image))
+    return _hflip(_rotate(image))
 
 
 def apply_color_jitter(
