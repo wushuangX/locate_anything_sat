@@ -1127,6 +1127,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         use_cache: bool,
         output_attentions: bool,
         device: torch.device,
+        pbd_block_sizes: Optional[torch.Tensor] = None,
     ):
         """Create attention mask based on implementation type and mode."""
         batch_size, seq_length = position_ids.shape
@@ -1153,6 +1154,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
                     position_ids=position_ids,
                     data_index=_build_data_index(),
                     causal_attn=self.causal_attn,
+                    sample_block_sizes=pbd_block_sizes,
                 )
 
             ar_decode = seq_length == 1
@@ -1190,6 +1192,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 position_ids=position_ids,
                 data_index=_build_data_index(),
                 causal_attn=self.causal_attn,
+                sample_block_sizes=pbd_block_sizes,
             )
         
         # Non-packing mode
@@ -1269,6 +1272,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         sub_sample_lengths: Optional[torch.Tensor] = None,  # For stream packing
+        pbd_block_sizes: Optional[torch.Tensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -1334,6 +1338,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
             use_cache=use_cache,
             output_attentions=output_attentions,
             device=device,
+            pbd_block_sizes=pbd_block_sizes,
         )
 
         hidden_states = inputs_embeds

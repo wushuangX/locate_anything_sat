@@ -13,7 +13,7 @@ Provides 2D and 4D attention mask construction for PyTorch SDPA and
 explicit matmul attention implementations.
 """
 import torch
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 def find_prefix_seq_length_by_pe(
@@ -291,6 +291,7 @@ def create_mtp_packing_mask_4d(
     position_ids: torch.Tensor,
     data_index: torch.Tensor,
     causal_attn: bool = False,
+    sample_block_sizes: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Create 4D attention mask for MTP with stream packing (for SDPA).
@@ -342,8 +343,12 @@ def create_mtp_packing_mask_4d(
     q_mtp_offset = pos_in_sample[q_idx.squeeze(-1)] - pos_x0_len[q_idx.squeeze(-1)]
     kv_mtp_offset = pos_in_sample[kv_idx.squeeze(0)] - pos_x0_len[kv_idx.squeeze(0)]
     
-    q_block_idx = q_mtp_offset // block_size
-    kv_block_idx = kv_mtp_offset // block_size
+    if sample_block_sizes is None:
+        pos_block_size = torch.full((seq_len,), int(block_size), device=device, dtype=torch.long)
+    else:
+        pos_block_size = sample_block_sizes.to(device=device, dtype=torch.long)[pos_sample_idx]
+    q_block_idx = q_mtp_offset // pos_block_size
+    kv_block_idx = kv_mtp_offset // pos_block_size
     
     q_block_idx_2d = q_block_idx.unsqueeze(1)
     kv_block_idx_2d = kv_block_idx.unsqueeze(0)
@@ -361,7 +366,7 @@ def create_mtp_packing_mask_4d(
         mutual_condition
     )
     
-    q_mtp_block_start_in_sample = pos_x0_len[q_idx.squeeze(-1)] + q_block_idx * block_size
+    q_mtp_block_start_in_sample = pos_x0_len[q_idx.squeeze(-1)] + q_block_idx * pos_block_size
     q_mtp_block_start_global = pos_sample_start[q_idx.squeeze(-1)] + q_mtp_block_start_in_sample
     q_mtp_block_start_global = q_mtp_block_start_global.clamp(0, seq_len - 1)
     

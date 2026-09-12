@@ -51,7 +51,8 @@ from eaglevl.sp_utils import set_pg_manager, get_pg_manager
 from eaglevl.train.constants import (
     special_tokens_list, IMG_CONTEXT_TOKEN, TEXT_MASK_TOKEN,
     NULL_TOKEN, BOX_START_TOKEN, BOX_END_TOKEN,
-    REF_START_TOKEN, REF_END_TOKEN, number_tokens_list
+    REF_START_TOKEN, REF_END_TOKEN, number_tokens_list,
+    OBB_START_TOKEN, OBB_END_TOKEN, obb_special_tokens_list,
 )
 from eaglevl.train.arguments import ModelArguments, DataTrainingArguments
 from eaglevl.train.merge_kernel_utils import parse_merge_kernel_size, merge_kernel_product
@@ -219,7 +220,13 @@ class LazySupervisedDatasetMTP(Dataset):
         self.max_frames = max_frames
         self.target_fps = target_fps
         self.video_total_pixels = video_total_pixels
-        self.block_size = block_size
+        self.geometry = meta.get("geometry", "hbb")
+        if self.geometry not in ("hbb", "obb"):
+            raise ValueError(
+                f"[Dataset] {self.ds_name} recipe 'geometry' must be 'hbb' or 'obb', "
+                f"got {self.geometry!r}"
+            )
+        self.block_size = 7 if self.geometry == "obb" else block_size
         self.data_augment = meta.get("data_augment", False)
         self.visual_prompt = bool(meta.get("visual_prompt", False))
         self.rotate = int(meta.get("rotate", 0) or 0)
@@ -249,7 +256,8 @@ class LazySupervisedDatasetMTP(Dataset):
         original_num_rows = len(self.lazy_loader)
         logger.info(
             f"[Dataset] {self.ds_name} Found {original_num_rows} samples. "
-            f"visual_prompt={self.visual_prompt}"
+            f"visual_prompt={self.visual_prompt} geometry={self.geometry} "
+            f"pbd_block_size={self.block_size}"
         )
         self.active_indices = list(range(original_num_rows))
         
@@ -273,9 +281,11 @@ class LazySupervisedDatasetMTP(Dataset):
         """Create MTP (Multi-Token Prediction) blocks with proper labels."""
         tokenizer = self.processor.tokenizer
         targets_flag = torch.zeros_like(input_ids)
-        
         box_end_id = tokenizer.convert_tokens_to_ids("</box>")
         ref_end_id = tokenizer.convert_tokens_to_ids("</ref>")
+        obb_end_id = None
+        if self.geometry == "obb":
+            obb_end_id = tokenizer.convert_tokens_to_ids("</obb>")
         eos_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
         null_id = tokenizer.convert_tokens_to_ids("<null>")
         mask_id = tokenizer.convert_tokens_to_ids("<text_mask>")
@@ -318,10 +328,10 @@ class LazySupervisedDatasetMTP(Dataset):
         targets_np = targets.squeeze(0).cpu().numpy()
         len_input_ids = len(input_ids_np)
         
-        # ========= 分支 1：无检测序列标记（</box>、</ref>），采用随机 block 切分 =========
         has_box = (input_ids == box_end_id).any().item()
         has_ref = (input_ids == ref_end_id).any().item()
-        if not (has_box or has_ref):
+        has_obb = bool(obb_end_id is not None and (input_ids == obb_end_id).any().item())
+        if not (has_box or has_ref or has_obb):
             all_mask_input_ids = []
             all_mask_targets = []
             all_mask_positions = []
@@ -450,6 +460,11 @@ class LazySupervisedDatasetMTP(Dataset):
                     box_indices = np.where(candidates[:valid_len] == box_end_id)[0]
                     if len(box_indices) > 0:
                         valid_len = min(valid_len, box_indices[0] + 1)
+                    if obb_end_id is not None:
+                        obb_indices = np.where(candidates[:valid_len] == obb_end_id)[0]
+                        if len(obb_indices) > 0:
+                            valid_len = min(valid_len, obb_indices[0] + 1)
+
 
                 target_block = np.full(self.block_size, null_id, dtype=input_ids_np.dtype)
                 target_block[:valid_len] = candidates[:valid_len]
@@ -573,6 +588,7 @@ class LazySupervisedDatasetMTP(Dataset):
             image_flags=image_flags,
             pixel_values=pixel_values,
             image_grid_hws=image_grid_hws,
+            pbd_block_size=int(self.block_size),
         )
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
@@ -803,12 +819,18 @@ class StreamPackedDatasetMTP(IterableDataset):
         if batch is None:
             result = copy.copy(sample)
             result['_sample_lengths'] = [sample_len]
+            result['_pbd_block_sizes'] = [int(sample.get("pbd_block_size", 6))]
+            result.pop("pbd_block_size", None)
             return result
         
         result = {}
         for k in batch:
             if k == '_sample_lengths':
                 result[k] = batch[k] + [sample_len]
+            elif k == '_pbd_block_sizes':
+                result[k] = batch[k] + [int(sample.get("pbd_block_size", 6))]
+            elif k == 'pbd_block_size':
+                continue
             elif k == 'image_grid_hws':
                 if isinstance(batch[k], np.ndarray) and isinstance(sample[k], np.ndarray):
                     result[k] = np.concatenate([batch[k], sample[k]], axis=0)
@@ -827,10 +849,11 @@ class StreamPackedDatasetMTP(IterableDataset):
         """Finalize batch by computing sub_sample_lengths."""
         sample_lengths = batch.pop('_sample_lengths', [batch['input_ids'].size(0)])
         sub_sample_lengths = torch.tensor(sample_lengths, dtype=torch.long)
-        
+        pbd_block_sizes = batch.pop('_pbd_block_sizes', None)
+        if pbd_block_sizes is None:
+            pbd_block_sizes = [6] * len(sample_lengths)
         batch['sub_sample_lengths'] = sub_sample_lengths
-        # attention_mask is not needed here; model will use sub_sample_lengths to generate data_index
-        
+        batch['pbd_block_sizes'] = torch.tensor(pbd_block_sizes, dtype=torch.long)
         return batch
 
     def __iter__(self):
@@ -1062,6 +1085,8 @@ def packed_collate_fn_mtp(features: List[dict], dataset: Optional[StreamPackedDa
         if isinstance(grid, np.ndarray):
             grid = torch.from_numpy(grid)
         result['image_grid_hws'] = grid
+    if 'pbd_block_sizes' in feat:
+        result['pbd_block_sizes'] = feat['pbd_block_sizes']
     
     if worker_key is not None:
         result['_worker_key'] = worker_key
@@ -1276,6 +1301,38 @@ def build_stream_packed_dataset_mtp(
 
 
 
+def enable_special_token_rows(model, token_ids: list[int]) -> None:
+    if not token_ids:
+        return
+    embed = model.language_model.get_input_embeddings().weight
+    head = None
+    lm = model.language_model
+    if hasattr(lm, "lm_head") and getattr(lm.lm_head, "weight", None) is not None:
+        head = lm.lm_head.weight
+    else:
+        inner = getattr(lm, "model", None)
+        if inner is not None and hasattr(inner, "lm_head") and getattr(inner.lm_head, "weight", None) is not None:
+            head = inner.lm_head.weight
+    if head is None:
+        raise RuntimeError(
+            "Cannot locate lm_head.weight to train new OBB special token rows"
+        )
+    ids = [int(i) for i in token_ids]
+
+    def _keep_rows(grad):
+        mask = torch.zeros_like(grad)
+        mask[ids] = 1
+        return grad * mask
+
+    embed.requires_grad = True
+    if embed.data_ptr() == head.data_ptr():
+        embed.register_hook(_keep_rows)
+        return
+    head.requires_grad = True
+    embed.register_hook(_keep_rows)
+    head.register_hook(_keep_rows)
+
+
 def main():
     launcher = os.environ.get('LAUNCHER', 'slurm')
     init_dist(launcher=launcher, backend='nccl')
@@ -1357,7 +1414,16 @@ def main():
         tokenizer_path, add_eos_token=False, trust_remote_code=True, use_fast=False)
     tokenizer.tokenizer_path = tokenizer_path
     tokenizer.model_max_length = data_args.max_seq_length
-    num_new_tokens = tokenizer.add_tokens(special_tokens_list + number_tokens_list, special_tokens=True)
+    obb_enabled = False
+    if data_args.meta_path:
+        ds_collections_for_tokens = json.loads(open(data_args.meta_path).read())
+        obb_enabled = any(meta.get("geometry") == "obb" for meta in ds_collections_for_tokens.values())
+    extra_tokens = list(obb_special_tokens_list) if obb_enabled else []
+    num_new_tokens = tokenizer.add_tokens(
+        special_tokens_list + number_tokens_list + extra_tokens, special_tokens=True
+    )
+    if obb_enabled:
+        logger.info("Recipe geometry=obb: adding <obb></obb> special tokens")
     
     if len(tokenizer.encode("assistant")) > 1:
         tokenizer.add_tokens(["assistant"], special_tokens=False)
@@ -1499,6 +1565,10 @@ def main():
         model.config.text_config.vocab_size = len(tokenizer)
         model.language_model.config.vocab_size = len(tokenizer)
         dist.barrier()
+    if obb_enabled:
+        model.config.obb_start_token_id = tokenizer.convert_tokens_to_ids(OBB_START_TOKEN)
+        model.config.obb_end_token_id = tokenizer.convert_tokens_to_ids(OBB_END_TOKEN)
+        model.config.obb_block_size = 7
 
     model.language_model.config.use_cache = False
 
@@ -1557,6 +1627,15 @@ def main():
     if model_args.use_llm_lora:
         model.wrap_llm_lora(r=model_args.use_llm_lora, lora_alpha=2 * model_args.use_llm_lora)
         model.config.use_llm_lora = model_args.use_llm_lora
+    if obb_enabled:
+        enable_special_token_rows(
+            model,
+            [
+                tokenizer.convert_tokens_to_ids(OBB_START_TOKEN),
+                tokenizer.convert_tokens_to_ids(OBB_END_TOKEN),
+            ],
+        )
+        logger.info("Enabled embedding/lm_head row grads for <obb></obb>")
 
     if model_args.freeze_mlp:
         _freeze_params(model.mlp1)

@@ -15,6 +15,8 @@ REF_START_TOKEN = '<ref>'
 REF_END_TOKEN = '</ref>'
 BOX_START_TOKEN = '<box>'
 BOX_END_TOKEN = '</box>'
+OBB_START_TOKEN = '<obb>'
+OBB_END_TOKEN = '</obb>'
 INTERVAL_START_TOKEN = '<interval>'
 INTERVAL_END_TOKEN = '</interval>'
 TEXT_MASK_TOKEN = '<text_mask>'
@@ -32,5 +34,9 @@ special_tokens_list = [
     NULL_TOKEN,
     SEP_TOKEN,
 ] 
+
+obb_special_tokens_list = [
+    OBB_START_TOKEN, OBB_END_TOKEN,
+]
 
 number_tokens_list = [f'<{i}>' for i in range(1001)]

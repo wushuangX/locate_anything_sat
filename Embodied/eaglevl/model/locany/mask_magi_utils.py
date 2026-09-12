@@ -13,7 +13,7 @@ Provides range-based sparse attention plan construction for MagiAttention
 (flex_flash_attn) used in both training (packing) and inference (decode).
 """
 import torch
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from .mask_sdpa_utils import _find_sample_x0_len_packed
 
@@ -124,6 +124,7 @@ def convert_mtp_mask_to_magi_plan(
     position_ids: torch.Tensor,
     data_index: torch.Tensor,
     causal_attn: bool = False,
+    sample_block_sizes: Optional[torch.Tensor] = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Converts MTP packing mask logic to MagiAttention flexible attention plan.
@@ -171,42 +172,43 @@ def convert_mtp_mask_to_magi_plan(
         s_start = sample_starts_cpu[i]
         s_end = sample_ends_cpu[i]
         x0_len = x0_lens_cpu[i]
-        
+        B = int(sample_block_sizes[i]) if sample_block_sizes is not None else block_size
+
         if x0_len > 0:
             x0_end = s_start + x0_len
             q_ranges_list.append([s_start, x0_end])
             k_ranges_list.append([s_start, x0_end])
             attn_types_list.append(1)
-            
+
             max_seqlen_q = max(max_seqlen_q, x0_len)
             max_seqlen_k = max(max_seqlen_k, x0_len)
-            
+
         mtp_start = s_start + x0_len
         if mtp_start < s_end:
             curr_start = mtp_start
             while curr_start < s_end:
-                curr_end = min(curr_start + block_size, s_end)
+                curr_end = min(curr_start + B, s_end)
                 block_len = curr_end - curr_start
-                
+
                 q_ranges_list.append([curr_start, curr_end])
                 k_ranges_list.append([curr_start, curr_end])
                 attn_types_list.append(1 if causal_attn else 0)
-                
+
                 max_seqlen_q = max(max_seqlen_q, block_len)
                 max_seqlen_k = max(max_seqlen_k, block_len)
-                
+
                 prefix_len = position_ids_cpu[curr_start].item()
                 prefix_len = min(prefix_len, x0_len)
-                
+
                 if prefix_len > 0:
                     prefix_end = s_start + prefix_len
                     q_ranges_list.append([curr_start, curr_end])
                     k_ranges_list.append([s_start, prefix_end])
                     attn_types_list.append(0)
-                    
+
                     max_seqlen_k = max(max_seqlen_k, prefix_len)
 
-                curr_start += block_size
+                curr_start += B
 
     if not q_ranges_list:
         return {

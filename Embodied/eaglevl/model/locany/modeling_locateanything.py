@@ -211,6 +211,7 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             sub_sample_lengths: Optional[List[torch.Tensor]] = None,
+            pbd_block_sizes: Optional[torch.Tensor] = None,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         RING_ZIGZAG = False
@@ -296,7 +297,8 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             sub_sample_lengths=ssl_tensor,  # Pass sub_sample_lengths for stream packing
-            )  
+            pbd_block_sizes=pbd_block_sizes,
+            )
         
         # not every token needs to be computed by lm_head, we only compute the tokens that have valid labels
         hidden_states = outputs.last_hidden_state
