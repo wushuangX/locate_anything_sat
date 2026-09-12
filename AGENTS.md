@@ -413,6 +413,7 @@ ______________________________________________________________________
 | Recipe JSON | `rotate` / `hflip` | 0 / false | 加载时对图像做 90° 旋转/水平翻转（配 `augment_locany_jsonl.py` 离线 JSONL；与 `visual_prompt` 互斥） |
 | Recipe JSON | `color_jitter` | false | 亮度/对比度/饱和度抖动（PIL ImageEnhance，strength 固定 0.2，按样本 idx 播种可复现） |
 | Recipe JSON | `visual_prompt` | false | 视觉提示微调（裁剪作 query） |
+| Recipe JSON | `geometry` | `hbb` | `obb` selects 7-token MTP and `<obb></obb>` tokens; CLI `--block_size` stays the HBB window |
 | `deepspeed_configs/` | config | — | zero_stage1（通信省）/ zero_stage2（显存省，推荐 full SFT） |
 
 ______________________________________________________________________
