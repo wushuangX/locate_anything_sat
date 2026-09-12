@@ -411,6 +411,7 @@ ______________________________________________________________________
 | Recipe JSON | `repeat_time` | 1.0 | 采样权重（≥1 重复，<1 下采样） |
 | Recipe JSON | `data_augment` | false | resize 多尺度增强（小目标推荐开） |
 | Recipe JSON | `rotate` / `hflip` | 0 / false | 加载时对图像做 90° 旋转/水平翻转（配 `augment_locany_jsonl.py` 离线 JSONL；与 `visual_prompt` 互斥） |
+| Recipe JSON | `geom_op` | (absent) | OBB D4 loader op: `rot90`/`rot180`/`rot270`/`hflip`/`hflip_rot*` (flip then rotate). Identity key omits it. HBB 五 key 仍用 `rotate`/`hflip` |
 | Recipe JSON | `color_jitter` | false | 亮度/对比度/饱和度抖动（PIL ImageEnhance，strength 固定 0.2，按样本 idx 播种可复现） |
 | Recipe JSON | `visual_prompt` | false | 视觉提示微调（裁剪作 query） |
 | Recipe JSON | `geometry` | `hbb` | `obb` selects 7-token MTP and `<obb></obb>` tokens; CLI `--block_size` stays the HBB window |

@@ -44,6 +44,19 @@ Launch old HBB training with the existing shell + old recipe. Do not point HBB e
 
 OBB launcher: `Embodied/shell/train-dota-obb-lora.sh` (still `--block_size 6`; recipe `geometry` enables tokens). Converter: `Embodied/scripts/convert_dota_obb_to_locany.py`.
 
+## DOTA-v2.0 OBB dataset (server)
+
+Do not mix v1 JSONL. Generate on the training machine from `Embodied/`:
+
+```bash
+# Optional if v2 labels reference v1 pixels:
+# export IMAGE_EXTRA_ROOT=/data/.../DOTA-v1.0
+bash shell/generate-dota-v2-obb.sh
+```
+
+Writes `data/dota_v2_obb_448_mix_v1/`: 0° mix + official-val `test_t1`, then seven D4 JSONL files, then 8-key `*_train_only.json` (`geometry: obb`, `color_jitter: true`). Human/gpt strings stay the oriented templates. Eval uses 0° `test_t1` only.
+
+
 ## LE90 quantization
 
 After `cv2.minAreaRect`, always `le90_canonicalize`: if `h > w`, swap `(w,h)` and `theta += 90`; wrap `theta` into `[-90, 90)` (`+90` → `-90`).
