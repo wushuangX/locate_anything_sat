@@ -59,7 +59,7 @@ locate_anything_sat/                 # ← 仓库根（AGENTS.md 位于此，便
 │   │   ├── locate-anything-lora-visual-prompt.sh   # LoRA + 视觉提示微调（本项目主用）
 │   │   └── locate-anything-streaming.sh            # full SFT 流式打包
 │   ├── deepspeed_configs/           # zero_stage1 / zero_stage2
-│   ├── document/                    # TRAINING.md / DATA_PREPARATION.md / STREAMING_PACKING.md / RESULTS.md
+│   ├── document/                    # EXPERIMENTS.md（四次 DOTA 微调索引）/ TRAINING.md / DATA_PREPARATION.md / STREAMING_PACKING.md / RESULTS.md
 │   ├── assets/                      # 论文图
 │   ├── locateanything_worker.py     # ★ 推理 worker API（detect / ground_multi / point / detect_text）
 │   ├── scripts/prompt_viz_app.py    # Streamlit：改 prompt + GT/预测可视化（§3.5.1）
@@ -99,21 +99,30 @@ pip install -r requirements.txt && pip install --no-build-isolation .
 
 ### 2.3 远程训练服务器
 
-训练在 NVIDIA GPU 上进行（本机仅开发）。**<TODO: 填写本项目实际使用的远程服务器（SSH/端口、GPU 型号显存、仓库数据盘路径、UV_CACHE_DIR/HF_HOME 等环境变量）>**。参考 CoastExtraction 的双服务器模板格式登记。
+训练在 NVIDIA GPU 上进行（本机仅开发）。本项目实际机器（2026-09 四次 DOTA HBB LoRA 均在此）：
+
+- **SSH**：`root@39.104.160.156 -p 20079`（AutoDL；非交互需 `BatchMode`）
+- **GPU**：2× RTX 4090 24GB（`CUDA_VISIBLE_DEVICES=0,1`）。仓库里的 7-GPU launcher 是另一台机器的遗留，**不要在本机跑**
+- **仓库**：`/data/locate_anything_sat` ↔ `/root/autodl-tmp/locate_anything_sat`（同一数据盘）
+- **工作根**：`/data/locate_anything_sat/Embodied`，venv `.venv`
+- **HF**：`HF_HOME=/root/autodl-tmp/cache/`；离线推理加 `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`
+- **基座**：`/root/autodl-tmp/LocateAnything-3B` 或 `/data/LocateAnything-3B`
+
+实验记录（数据版本 + 四次 run）：[`Embodied/document/EXPERIMENTS.md`](Embodied/document/EXPERIMENTS.md)。
 
 通用准备：
 ```bash
 # 1. SSH 连接后设环境变量（每次非交互式 shell 需手动 export）
 export PATH="$PATH:/root/.local/bin"
-export HF_HOME=<数据盘上的 HF 缓存>      # 模型权重较大，必须放数据盘
-export HF_TOKEN=<your_token>             # 下载 nvidia/LocateAnything-3B 需要
+export HF_HOME=/root/autodl-tmp/cache/
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1   # 本地基座已下载后
 
-# 2. 同步仓库到数据盘
-cd <数据盘> && git clone <仓库地址> && cd locate_anything_sat/Embodied
-pip install -e .
+# 2. 工作根
+cd /data/locate_anything_sat/Embodied
+source .venv/bin/activate
 
-# 3. 拉取基座权重（首次）
-huggingface-cli download nvidia/LocateAnything-3B --local-dir <数据盘>/LocateAnything-3B
+# 3. 基座（已在数据盘；无需重复 download）
+# /root/autodl-tmp/LocateAnything-3B  或  /data/LocateAnything-3B
 ```
 
 ______________________________________________________________________
@@ -239,6 +248,8 @@ bash evaluation/scripts/eval_grounding.sh \
 ```
 
 **遥感小目标自定义评估**：将 RS 测试集（如 AI-TOD/VisDrone test）转为 LocateAnything JSONL 标注格式（见第 4 节），复用 `eval_grounding.sh`，并额外按目标尺寸（small/medium/large，COCO 面积分桶）分桶报告 mAP——**小目标分桶 mAP 是本项目核心指标**。
+
+已完成的 DOTA HBB LoRA 次数、数据版本（v0 / v1 / v1-geom）与指标见 [`Embodied/document/EXPERIMENTS.md`](Embodied/document/EXPERIMENTS.md)，不要把 50-tile F1 写成 COCO mAP。
 
 ______________________________________________________________________
 

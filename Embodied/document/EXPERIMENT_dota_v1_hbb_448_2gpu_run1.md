@@ -2,6 +2,8 @@
 
 Recorded 2026-09-09. Numbers below are from this run only; they are not COCO mAP.
 
+Dataset **v0** (`data/dota_v1_hbb_448/`, 每 tile 一条全类检测). Index: [EXPERIMENTS.md](EXPERIMENTS.md).
+
 ## 1. Setup
 
 | Item | Value |

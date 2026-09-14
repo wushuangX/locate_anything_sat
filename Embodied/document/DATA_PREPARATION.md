@@ -225,6 +225,8 @@ Samples without images are treated as text-only conversation data.
 
 Use `scripts/convert_dota_hbb_to_locany.py` for the first remote-sensing HBB training stage. It reads DOTA OBB labels (`x1 y1 ... x4 y4 class difficult`), converts each object to its horizontal enclosing box, slices images into 448×448 tiles, and writes a **static mixed-task** LocateAnything JSONL (detection / single-class / class-subset / pure-negative / referring) plus recipes. Task mix is on by default; `--no-task-mix` restores the legacy one all-classes sample per tile.
 
+**Version lineage (what actually trained):** pixel tiles were cut once into `data/dota_v1_hbb_448/` (**v0**, one all-class sample per tile). **v1** (`data/dota_v1_hbb_448_mix_v1/`) reuses those tiles (`--reuse-tiles-from`) and only rewrites JSONL as T1–T5 task-mix plus a 9:1 internal split. **v1-geom** adds four offline geometric JSONL files + a five-key recipe with `color_jitter`; pixels stay the same. Run ↔ version mapping: [EXPERIMENTS.md](EXPERIMENTS.md).
+
 ```bash
 cd Embodied
 python scripts/convert_dota_hbb_to_locany.py \
