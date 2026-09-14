@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import streamlit as st
@@ -38,6 +39,7 @@ DOTA_V1_CLASSES = [
 BOX_RE = re.compile(r"<ref>(.*?)</ref><box><(\d+)><(\d+)><(\d+)><(\d+)></box>")
 NONE_RE = re.compile(r"<box>[Nn]one</box>", re.IGNORECASE)
 PRED_COLOR = (255, 60, 60)
+PRED_PALETTE = [(255, 60, 60), (255, 140, 0), (180, 80, 255), (0, 180, 200)]
 GT_COLOR = (40, 220, 70)
 FONT = ImageFont.load_default()
 
@@ -54,6 +56,11 @@ PRESETS = {
 }
 
 DEFAULT_CKPT = "/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_448_mix_v1_lora_lda_2gpu_4k_15k_run1/checkpoint-15000"
+DEFAULT_CKPT_ROOT = "/data/locate_anything_sat/Embodied/work_dirs"
+DEFAULT_COMPARE_CKPTS = [
+    DEFAULT_CKPT,
+    f"{DEFAULT_CKPT_ROOT}/dota_geom_lora_lda_2gpu_4k_100k_run1",
+]
 DEFAULT_ROOT = "/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1"
 
 
@@ -67,6 +74,69 @@ def parse_answer(answer: str):
             )
         )
     return boxes
+
+def iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ix1 = max(a[0], b[0])
+    iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2])
+    iy2 = min(a[3], b[3])
+    iw = max(0, ix2 - ix1)
+    ih = max(0, iy2 - iy1)
+    inter = iw * ih
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def match_boxes(
+    preds: list[tuple[str, tuple]],
+    gts: list[tuple[str, tuple]],
+    iou_thr: float,
+):
+    """Greedy match by IoU, returns TP/FP/FN counts per class."""
+    by_class_gt = defaultdict(list)
+    by_class_pred = defaultdict(list)
+    for i, (label, box) in enumerate(gts):
+        by_class_gt[label].append((i, box))
+    for i, (label, box) in enumerate(preds):
+        by_class_pred[label].append((i, box))
+
+    tp = defaultdict(int)
+    fp = defaultdict(int)
+    fn = defaultdict(int)
+
+    all_labels = set(by_class_gt.keys()) | set(by_class_pred.keys())
+    for label in all_labels:
+        gt_items = by_class_gt.get(label, [])
+        pred_items = by_class_pred.get(label, [])
+        matched_gt = set()
+        matched_pred = set()
+
+        scored = []
+        for pi, (pidx, pbox) in enumerate(pred_items):
+            for gi, (gidx, gbox) in enumerate(gt_items):
+                sc = iou(pbox, gbox)
+                if sc >= iou_thr:
+                    scored.append((sc, pi, gi))
+        scored.sort(reverse=True)
+
+        for sc, pi, gi in scored:
+            if pi not in matched_pred and gi not in matched_gt:
+                matched_pred.add(pi)
+                matched_gt.add(gi)
+                tp[label] += 1
+
+        fp[label] = len(pred_items) - len(matched_pred)
+        fn[label] = len(gt_items) - len(matched_gt)
+
+    return tp, fp, fn
+
+
+def match_totals(preds, gts, iou_thr=0.5) -> tuple[int, int, int]:
+    tp, fp, fn = match_boxes(preds, gts, iou_thr)
+    return sum(tp.values()), sum(fp.values()), sum(fn.values())
+
 
 
 def draw_boxes(img, boxes, title="", color=PRED_COLOR):
@@ -94,17 +164,39 @@ def draw_boxes(img, boxes, title="", color=PRED_COLOR):
     return canvas
 
 
-@st.cache_resource
-def load_worker(model_path: str):
+@st.cache_resource(max_entries=4)
+def load_worker(model_path: str, device: str = "cuda"):
     import torch
     from locateanything_worker import LocateAnythingWorker
 
     return LocateAnythingWorker(
         model_path,
-        device="cuda",
+        device=device,
         dtype=torch.bfloat16,
         attn="sdpa",
     )
+
+
+def release_cached_workers() -> str:
+    import gc
+    import torch
+
+    load_worker.clear()
+    gc.collect()
+    if not torch.cuda.is_available():
+        return "CUDA not available"
+    lines = []
+    for i in range(torch.cuda.device_count()):
+        with torch.cuda.device(i):
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        alloc = torch.cuda.memory_allocated(i) / 1024**3
+        reserved = torch.cuda.memory_reserved(i) / 1024**3
+        lines.append(f"cuda:{i} allocated={alloc:.2f} GiB reserved={reserved:.2f} GiB")
+    gc.collect()
+    return " | ".join(lines)
+
 
 
 @st.cache_data
@@ -203,6 +295,29 @@ def lookup_gt(upload, tile_path: str, data_root: str):
     return []
 
 
+def run_detect(worker, image, prompts, generation_mode: str, max_new_tokens: int):
+    import time
+    logs, boxes = [], []
+    none_n = 0
+    t0 = time.perf_counter()
+    for tag, prompt in prompts:
+        result = worker.predict(
+            image, prompt,
+            generation_mode=generation_mode,
+            max_new_tokens=int(max_new_tokens),
+            temperature=0.0,
+            verbose=False,
+        )
+        answer = result.get("answer", "")
+        if NONE_RE.search(answer):
+            none_n += 1
+        parsed = parse_answer(answer)
+        boxes.extend(parsed)
+        logs.append(f"[{tag}]\nprompt: {prompt}\nanswer: {answer}\nparsed: {len(parsed)} boxes")
+    return boxes, none_n, logs, time.perf_counter() - t0
+
+
+
 @st.cache_data
 def list_splits(data_root: str) -> list[str]:
     tiles = Path(data_root) / "tiles"
@@ -219,16 +334,82 @@ def list_tile_names(data_root: str, split: str) -> list[str]:
     return sorted(p.name for p in folder.glob("*.png"))
 
 
+@st.cache_data
+def list_checkpoints(ckpt_root: str) -> list[str]:
+    root = Path(ckpt_root)
+    if not root.is_dir():
+        return []
+    rows: list[tuple[str, int, str]] = []
+    for run in sorted(p for p in root.iterdir() if p.is_dir()):
+        if (run / "config.json").is_file():
+            rows.append((run.name, -1, str(run)))
+        for child in run.iterdir():
+            if not child.is_dir() or not child.name.startswith("checkpoint-"):
+                continue
+            if not (child / "config.json").is_file():
+                continue
+            try:
+                step = int(child.name.split("-", 1)[1])
+            except ValueError:
+                continue
+            rows.append((run.name, step, str(child)))
+    rows.sort(key=lambda r: (r[0], r[1]))
+    return [p for _, _, p in rows]
+
+
+def _ckpt_label(path: str, ckpt_root: str) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(Path(ckpt_root).resolve()))
+    except ValueError:
+        return Path(path).name
+
+
+
 def main():
     st.set_page_config(page_title="LocateAnything prompt viz", layout="wide")
     st.title("LocateAnything prompt viz")
     st.caption("Green = GT from JSONL. Red = model. `{class}` is replaced per selected DOTA class.")
 
     with st.sidebar:
-        model_path = st.text_input("checkpoint", DEFAULT_CKPT)
+        mode = st.radio("mode", ["single", "compare"], index=0, horizontal=True)
+        ckpt_root = st.text_input("checkpoint root", DEFAULT_CKPT_ROOT)
+        ckpt_filter = st.text_input("filter checkpoint", placeholder="15000 / 100k / lda")
+        ckpts = list_checkpoints(ckpt_root)
+        if ckpt_filter.strip():
+            q = ckpt_filter.strip().lower()
+            ckpts = [p for p in ckpts if q in p.lower()]
+
+        def fmt(path: str) -> str:
+            return _ckpt_label(path, ckpt_root)
+
+        model_path = DEFAULT_CKPT
+        ckpt_paths: list[str] = []
+        if mode == "single":
+            if ckpts:
+                idx = ckpts.index(DEFAULT_CKPT) if DEFAULT_CKPT in ckpts else 0
+                model_path = st.selectbox(
+                    "checkpoint", ckpts, index=idx, format_func=fmt
+                )
+            else:
+                st.warning("No checkpoints under checkpoint root.")
+                model_path = st.selectbox("checkpoint", [""], index=0, disabled=True)
+        else:
+            if ckpts:
+                default_sel = [p for p in DEFAULT_COMPARE_CKPTS if p in ckpts][:4]
+                ckpt_paths = st.multiselect(
+                    "checkpoints (2–4)",
+                    ckpts,
+                    default=default_sel,
+                    max_selections=4,
+                    format_func=fmt,
+                )
+            else:
+                st.warning("No checkpoints under checkpoint root.")
         data_root = st.text_input("data root", DEFAULT_ROOT)
         generation_mode = st.selectbox("generation_mode", ["hybrid", "fast", "slow"], index=0)
         max_new_tokens = st.slider("max_new_tokens", 64, 1024, 512, 64)
+        if st.button("Release GPU"):
+            st.success(release_cached_workers())
 
     preset = st.selectbox("preset", list(PRESETS.keys()), index=0)
     template = st.text_area("prompt template", value=PRESETS[preset], height=80)
@@ -264,7 +445,11 @@ def main():
     preview = resolve_image(upload, tile_path, data_root)
     gt_boxes = lookup_gt(upload, tile_path, data_root)
 
-    col_in, col_gt, col_pred = st.columns(3)
+    if mode == "compare":
+        col_in, col_gt = st.columns(2)
+        col_pred = None
+    else:
+        col_in, col_gt, col_pred = st.columns(3)
     with col_in:
         if preview is not None:
             st.image(preview, caption="input", use_container_width=True)
@@ -284,10 +469,6 @@ def main():
         if image is None:
             st.error("Need an uploaded image or a valid tile path.")
             return
-        worker = load_worker(model_path)
-        logs = []
-        boxes = []
-        none_n = 0
         if "{class}" in template:
             if not classes:
                 st.error("Template has {class} but no classes selected.")
@@ -298,21 +479,70 @@ def main():
                 st.error("Empty prompt.")
                 return
             prompts = [("free", template.strip())]
-        for tag, prompt in prompts:
-            result = worker.predict(
-                image,
-                prompt,
-                generation_mode=generation_mode,
-                max_new_tokens=int(max_new_tokens),
-                temperature=0.0,
-                verbose=False,
-            )
-            answer = result.get("answer", "")
-            if NONE_RE.search(answer):
-                none_n += 1
-            parsed = parse_answer(answer)
-            boxes.extend(parsed)
-            logs.append(f"[{tag}]\nprompt: {prompt}\nanswer: {answer}\nparsed: {len(parsed)} boxes")
+
+        if mode == "compare":
+            if len(ckpt_paths) < 2:
+                st.error("Compare mode needs at least 2 checkpoints.")
+                return
+            if len(ckpt_paths) > 4:
+                st.warning("Compare mode uses at most 4 checkpoints; extra paths ignored.")
+                ckpt_paths = ckpt_paths[:4]
+            try:
+                import torch
+                n_gpu = max(torch.cuda.device_count(), 1)
+                compare_rows = []
+                for i, path in enumerate(ckpt_paths):
+                    device = f"cuda:{i % n_gpu}"
+                    worker = load_worker(path, device)
+                    boxes, none_n, logs, elapsed = run_detect(
+                        worker, image, prompts, generation_mode, max_new_tokens
+                    )
+                    if gt_boxes:
+                        tp, fp, fn = match_totals(boxes, gt_boxes)
+                    else:
+                        tp, fp, fn = None, None, None
+                    compare_rows.append((path, boxes, none_n, logs, elapsed, tp, fp, fn))
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    st.error(
+                        "GPU OOM: drop a checkpoint or restart Streamlit with both GPUs visible."
+                    )
+                else:
+                    st.exception(e)
+                return
+            except Exception as e:
+                st.exception(e)
+                return
+
+            pred_cols = st.columns(len(compare_rows))
+            raw_parts = []
+            for i, (path, boxes, none_n, logs, elapsed, tp, fp, fn) in enumerate(compare_rows):
+                name = Path(path).name
+                color = PRED_PALETTE[i % len(PRED_PALETTE)]
+                caption = f"{name} | {len(boxes)} boxes | {elapsed:.1f}s"
+                if tp is None:
+                    caption += " | no GT"
+                else:
+                    caption += f" | TP/FP/FN={tp}/{fp}/{fn} @0.5"
+                with pred_cols[i]:
+                    st.image(
+                        draw_boxes(
+                            image,
+                            boxes,
+                            title=f"{name} none={none_n}/{len(prompts)}",
+                            color=color,
+                        ),
+                        caption=caption,
+                        use_container_width=True,
+                    )
+                raw_parts.append(f"===== {name} =====\n\n" + "\n\n".join(logs))
+            st.text_area("raw model output", value="\n\n".join(raw_parts), height=320)
+            return
+
+        worker = load_worker(model_path)
+        boxes, none_n, logs, _elapsed = run_detect(
+            worker, image, prompts, generation_mode, max_new_tokens
+        )
         with col_pred:
             st.image(
                 draw_boxes(image, boxes, title=f"pred none={none_n}/{len(prompts)}", color=PRED_COLOR),
