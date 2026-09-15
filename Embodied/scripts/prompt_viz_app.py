@@ -57,6 +57,10 @@ PRESETS = {
 
 DEFAULT_CKPT = "/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_448_mix_v1_lora_lda_2gpu_4k_15k_run1/checkpoint-15000"
 DEFAULT_CKPT_ROOT = "/data/locate_anything_sat/Embodied/work_dirs"
+BASE_MODEL_CANDIDATES = [
+    "/data/LocateAnything-3B",
+    "/root/autodl-tmp/LocateAnything-3B",
+]
 DEFAULT_COMPARE_CKPTS = [
     DEFAULT_CKPT,
     f"{DEFAULT_CKPT_ROOT}/dota_geom_lora_lda_2gpu_4k_100k_run1",
@@ -357,6 +361,15 @@ def list_checkpoints(ckpt_root: str) -> list[str]:
     return [p for _, _, p in rows]
 
 
+@st.cache_data
+def find_base_model() -> str:
+    """First existing base-model dir among BASE_MODEL_CANDIDATES."""
+    for p in BASE_MODEL_CANDIDATES:
+        if (Path(p) / "config.json").is_file():
+            return p
+    return ""
+
+
 def _ckpt_label(path: str, ckpt_root: str) -> str:
     try:
         return str(Path(path).resolve().relative_to(Path(ckpt_root).resolve()))
@@ -375,6 +388,11 @@ def main():
         ckpt_root = st.text_input("checkpoint root", DEFAULT_CKPT_ROOT)
         ckpt_filter = st.text_input("filter checkpoint", placeholder="15000 / 100k / lda")
         ckpts = list_checkpoints(ckpt_root)
+        base_model = find_base_model()
+        if base_model and base_model not in ckpts:
+            ckpts.insert(0, base_model)
+        if not base_model:
+            st.caption(f"base model not found in: {' / '.join(BASE_MODEL_CANDIDATES)}")
         if ckpt_filter.strip():
             q = ckpt_filter.strip().lower()
             ckpts = [p for p in ckpts if q in p.lower()]
@@ -395,7 +413,10 @@ def main():
                 model_path = st.selectbox("checkpoint", [""], index=0, disabled=True)
         else:
             if ckpts:
-                default_sel = [p for p in DEFAULT_COMPARE_CKPTS if p in ckpts][:4]
+                default_sel = (
+                    ([base_model] if base_model else [])
+                    + [p for p in DEFAULT_COMPARE_CKPTS if p in ckpts]
+                )[:4]
                 ckpt_paths = st.multiselect(
                     "checkpoints (2–4)",
                     ckpts,
