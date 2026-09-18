@@ -229,6 +229,7 @@ class LazySupervisedDatasetMTP(Dataset):
             )
         self.block_size = 7 if self.geometry == "obb" else block_size
         self.data_augment = meta.get("data_augment", False)
+        self.color_jitter = bool(meta.get("color_jitter", False))
         self.visual_prompt = bool(meta.get("visual_prompt", False))
         self.rotate = int(meta.get("rotate", 0) or 0)
         self.hflip = bool(meta.get("hflip", False))
