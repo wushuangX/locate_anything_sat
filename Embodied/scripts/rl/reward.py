@@ -40,12 +40,14 @@ _RE_REF = re.compile(r"<ref>(.*?)</ref>", re.S)
 _RE_COORD = re.compile(r"<(-?\d+)>")
 
 
-def parse_answer(text: str, tile_size: int = 448) -> dict:
+def parse_answer(text: str, tile_size: int = 448, max_boxes: int = MAX_BOXES) -> dict:
     """解析模型/GT 答案文本 → {valid, is_none, boxes, n_raw}。
 
     boxes: list[(label, x1, y1, x2, y2)]，坐标已 token→像素（c·tile_size/1000，clamp 到
     [0, tile_size]）；退化框（x2<=x1 或 y2<=y1）从 boxes 丢弃但仍计入 n_raw。
-    n_raw: 解析出的框总数（丢弃前）。valid 且 n_raw>20 → valid=False。
+    n_raw: 解析出的框总数（丢弃前）。n_raw>max_boxes → valid=False。
+    max_boxes=20 是模型输出的格式失败阈值；解析 GT 时传 converter 实际上限
+    （--max-boxes-per-sample 30），20 框上限不适用于 GT。
     """
     blocks = [m.group(1).strip() for m in _RE_BOX.finditer(text)]
     refs = _RE_REF.findall(text)
@@ -73,7 +75,7 @@ def parse_answer(text: str, tile_size: int = 448) -> dict:
             boxes.append((label, x1, y1, x2, y2))
 
     n_raw = len(pairs)
-    valid = n_raw <= MAX_BOXES
+    valid = n_raw <= max_boxes
     return {
         "valid": valid,
         "is_none": False,
@@ -287,6 +289,9 @@ def selftest() -> None:
     assert parse_answer("<ref>a</ref><box><1><2><3></box>", T)["valid"] is False  # 坐标数≠4
     assert parse_answer("".join(_ans("a", i, i, i + 5, i + 5) for i in range(20)), T)["valid"]
     assert parse_answer("".join(_ans("a", i, i, i + 5, i + 5) for i in range(21)), T)["valid"] is False
+    # GT 解析豁免 20 框上限（converter --max-boxes-per-sample 30）
+    assert parse_answer("".join(_ans("a", i, i, i + 5, i + 5) for i in range(30)),
+                        T, max_boxes=30)["valid"]
 
     # ---- nms_order 单元 ----
     assert nms_order([("a", 0, 0, 10, 10), ("a", 0, 0, 10, 10), ("b", 0, 0, 10, 10)]) == [0, 2]

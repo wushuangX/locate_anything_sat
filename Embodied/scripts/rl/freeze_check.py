@@ -94,7 +94,9 @@ def shard_split(items: list, shard: int, num_shards: int) -> list:
 
 
 def parse_gt(row: dict) -> list:
-    return reward.parse_answer(row["conversations"][1]["value"], TILE_SIZE)["boxes"]
+    # GT 由 converter 生成，单 tile 最多 30 框（--max-boxes-per-sample 30）；
+    # 20 框上限只约束模型输出（格式失败阈值），GT 按 converter 实际上限解析
+    return reward.parse_answer(row["conversations"][1]["value"], TILE_SIZE, max_boxes=30)["boxes"]
 
 
 def load_image(args, rel_path: str):
