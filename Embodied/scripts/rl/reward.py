@@ -219,15 +219,15 @@ def f1_at_05(pred: list, gt: list) -> float:
         return 0.0
 
     scored = []
-    for i, (pl, pb) in enumerate(pred):
-        for j, (gl, gb) in enumerate(gt):
-            if pl != gl:
+    for i, p in enumerate(pred):
+        for j, g in enumerate(gt):
+            if p[0] != g[0]:
                 continue
-            ix1, iy1 = max(pb[1], gb[1]), max(pb[2], gb[2])
-            ix2, iy2 = min(pb[3], gb[3]), min(pb[4], gb[4])
+            ix1, iy1 = max(p[1], g[1]), max(p[2], g[2])
+            ix2, iy2 = min(p[3], g[3]), min(p[4], g[4])
             iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
             inter = iw * ih
-            union = (pb[3] - pb[1]) * (pb[4] - pb[2]) + (gb[3] - gb[1]) * (gb[4] - gb[2]) - inter
+            union = (p[3] - p[1]) * (p[4] - p[2]) + (g[3] - g[1]) * (g[4] - g[2]) - inter
             if union <= 0:
                 continue
             sc = inter / union
