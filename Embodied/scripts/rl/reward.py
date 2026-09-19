@@ -270,8 +270,9 @@ def selftest() -> None:
     assert lbl == "a" and _approx(x1, 44.8) and _approx(y1, 89.6) \
         and _approx(x2, 64.96) and _approx(y2, 100.8), pa["boxes"]
 
-    pa = parse_answer(_ans("a", 1200, -5, 500, 500), tile_size=448)  # clamp
-    assert pa["boxes"][0][1] == 448.0 and pa["boxes"][0][2] == 0.0
+    pa = parse_answer(_ans("a", -50, 200, 1200, 300), tile_size=448)  # clamp 到 [0, tile]
+    (_, x1, y1, x2, y2) = pa["boxes"][0]
+    assert (x1, y1, x2, y2) == (0.0, 89.6, 448.0, 134.4), pa["boxes"]
 
     pa = parse_answer(_ans("a", 500, 500, 100, 100), tile_size=T)  # 退化框：丢弃但计 n_raw
     assert pa["valid"] and pa["boxes"] == [] and pa["n_raw"] == 1
