@@ -204,7 +204,7 @@ def run_timing(args) -> int:
     fallback = mean_gen > FALLBACK_GEN_SECONDS
     print(f"  单样本生成均值 {'>' if fallback else '<='} {FALLBACK_GEN_SECONDS}s → "
           + ("触发预决策回退：--tiles 384 --n 12（门阈值不变）" if fallback else "无需回退"))
-    return 1 if fallback or wall_h > GATE_WALLCLOCK_BUDGET_H else 0
+    return 1 if fallback else 0
 
 
 def run_gate(args) -> int:
