@@ -560,11 +560,23 @@ def main():
             st.info("Upload an image or pick a server tile.")
     with col_gt:
         if preview is not None:
+            if gt_boxes:
+                gt_caption = f"GT ({len(gt_boxes)} boxes)"
+            elif data_fmt != ann_fmt:
+                gt_caption = f"GT 无法解析：data root 是 {data_fmt.upper()} 数据，annotation format 是 {ann_fmt.upper()}"
+            else:
+                gt_caption = "GT 0：JSONL 无此 tile 的类框（空 tile）"
             st.image(
                 draw_boxes(preview, gt_boxes, title="GT", color=GT_COLOR, fmt=ann_fmt),
-                caption=f"GT ({len(gt_boxes)} boxes)" if gt_boxes else "GT 0：JSONL 无此 tile 的类框（空 tile，或 data root/annotation format 不匹配）",
+                caption=gt_caption,
                 use_container_width=True,
             )
+            if not gt_boxes and data_fmt != ann_fmt:
+                st.error(
+                    f"data root 与模型格式不一致（data: {data_fmt} / format: {ann_fmt}）：GT 永远解析为 0。"
+                    + ("请把 data root 指向 /data/locate_anything_sat/Embodied/data/dota_v2_obb_448_mix_v1"
+                       if ann_fmt == "obb" else "请把 data root 指向 HBB 数据根，或手动切 format")
+                )
 
     run = st.button("Detect", type="primary")
     if run:
