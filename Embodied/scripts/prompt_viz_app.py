@@ -363,6 +363,7 @@ def run_detect(worker, image, prompts, generation_mode: str, max_new_tokens: int
             max_new_tokens=int(max_new_tokens),
             temperature=0.0,
             verbose=False,
+            n_future_tokens=7 if ann_fmt == "obb" else None,
         )
         answer = result.get("answer", "")
         if none_re(ann_fmt).search(answer):
