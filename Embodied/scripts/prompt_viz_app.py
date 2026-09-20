@@ -38,6 +38,7 @@ DOTA_V1_CLASSES = [
 ]
 DOTA_V2_CLASSES = DOTA_V1_CLASSES + ["airport", "container-crane", "helipad"]
 BOX_RE = re.compile(r"<ref>(.*?)</ref><box><(\d+)><(\d+)><(\d+)><(\d+)></box>")
+NONE_RE = re.compile(r"<box>[Nn]one</box>", re.IGNORECASE)
 OBB_RE = re.compile(r"<ref>(.*?)</ref><obb><(\d+)><(\d+)><(\d+)><(\d+)><(\d+)></obb>")
 OBB_NONE_RE = re.compile(r"<obb>[Nn]one</obb>", re.IGNORECASE)
 PRED_COLOR = (255, 60, 60)
