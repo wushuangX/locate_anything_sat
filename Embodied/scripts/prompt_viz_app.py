@@ -509,6 +509,7 @@ def main():
             st.warning("checkpoint 是 OBB 模型，但 data root 不含 'obb'：GT 无法解析为旋转框。请把 data root 指向 dota_v2_obb_448_mix_v1。")
         if ann_fmt == "hbb" and data_fmt == "obb" and ckpt_fmts and "obb" not in ckpt_fmts:
             st.warning("data root 是 OBB 数据，但 checkpoint 疑似 HBB 模型；如需按 <obb> 解析请手动切 format=obb。")
+        generation_mode = st.selectbox("generation_mode", ["hybrid", "fast", "slow"], index=0)
         max_new_tokens = st.slider("max_new_tokens", 64, 1024, 512, 64)
         if st.button("Release GPU"):
             st.success(release_cached_workers())
