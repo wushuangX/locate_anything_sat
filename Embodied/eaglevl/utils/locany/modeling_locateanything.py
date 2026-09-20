@@ -482,6 +482,10 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
 
         # Generate loop
         inner = self.language_model.model
+        # peft wrap 下 .model 链是 PeftModel→LoraModel→Qwen2ForCausalLM→Qwen2Model；
+        # block_size 读写必须落在 Qwen2Model（forward 实际消费 self.block_size 的那一层）
+        while not hasattr(inner, "block_size") and hasattr(inner, "model"):
+            inner = inner.model
         old_bs = inner.block_size
         inner.block_size = n_future_tokens
         try:
