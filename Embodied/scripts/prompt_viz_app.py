@@ -69,9 +69,14 @@ DEFAULT_COMPARE_CKPTS = [
     f"{DEFAULT_CKPT_ROOT}/dota_geom_lora_lda_2gpu_4k_100k_run1",
 ]
 DEFAULT_ROOT = "/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1"
-
 def detect_format(data_root: str) -> str:
     """数据根目录名含 'obb' → OBB 模式（<obb> 5-token + 旋转 IoU）。"""
+    return "obb" if "obb" in Path(data_root or "").name.lower() else "hbb"
+
+
+def ckpt_format(model_path: str) -> str:
+    """checkpoint 路径名含 'obb' → 该模型输出 <obb> 旋转框（答案格式由模型决定）。"""
+    return "obb" if "obb" in Path(model_path or "").name.lower() else "hbb"
     return "obb" if "obb" in Path(data_root or "").name.lower() else "hbb"
 
 
@@ -355,6 +360,8 @@ def run_detect(worker, image, prompts, generation_mode: str, max_new_tokens: int
     import time
     logs, boxes = [], []
     none_n = 0
+    pred_fmt = ann_fmt
+    other = "hbb" if ann_fmt == "obb" else "obb"
     t0 = time.perf_counter()
     for tag, prompt in prompts:
         result = worker.predict(
@@ -369,9 +376,17 @@ def run_detect(worker, image, prompts, generation_mode: str, max_new_tokens: int
         if none_re(ann_fmt).search(answer):
             none_n += 1
         parsed = parse_answer(answer, ann_fmt)
+        note = ""
+        if not parsed:
+            alt = parse_answer(answer, other)
+            if alt:
+                parsed = alt
+                pred_fmt = other
+                note = (f"  ⚠ 当前 format={ann_fmt} 解析为 0，已按 {other} 兜底解析 {len(alt)} 框"
+                        "——checkpoint 输出格式与 annotation format 不一致，请核对格式开关/数据根")
         boxes.extend(parsed)
-        logs.append(f"[{tag}]\nprompt: {prompt}\nanswer: {answer}\nparsed: {len(parsed)} boxes")
-    return boxes, none_n, logs, time.perf_counter() - t0
+        logs.append(f"[{tag}]\nprompt: {prompt}\nanswer: {answer}\nparsed: {len(parsed)} boxes{note}")
+    return boxes, none_n, logs, time.perf_counter() - t0, pred_fmt
 
 
 
@@ -480,13 +495,20 @@ def main():
             else:
                 st.warning("No checkpoints under checkpoint root.")
         data_root = st.text_input("data root", DEFAULT_ROOT)
+        data_fmt = detect_format(data_root)
         fmt_choice = st.selectbox(
             "annotation format", ["auto", "hbb", "obb"], index=0,
-            help="auto: 数据根目录名含 'obb' → <obb> 5-token 解析 + 旋转 IoU + 多边形绘制",
+            help="auto: 数据根或 checkpoint 名含 'obb' → <obb> 5-token 解析 + 旋转 IoU + 多边形绘制",
         )
-        ann_fmt = fmt_choice if fmt_choice != "auto" else detect_format(data_root)
-        st.caption(f"annotation format: **{ann_fmt}**")
-        generation_mode = st.selectbox("generation_mode", ["hybrid", "fast", "slow"], index=0)
+        selected_ckpts = [model_path] if mode == "single" else [p for p in ckpt_paths if p]
+        ckpt_fmts = {ckpt_format(p) for p in selected_ckpts}
+        auto_fmt = "obb" if "obb" in ({data_fmt} | ckpt_fmts) else "hbb"
+        ann_fmt = fmt_choice if fmt_choice != "auto" else auto_fmt
+        st.caption(f"annotation format: **{ann_fmt}** (data: {data_fmt}, ckpt: {'/'.join(sorted(ckpt_fmts)) or 'n/a'})")
+        if ann_fmt == "obb" and data_fmt != "obb":
+            st.warning("checkpoint 是 OBB 模型，但 data root 不含 'obb'：GT 无法解析为旋转框。请把 data root 指向 dota_v2_obb_448_mix_v1。")
+        if ann_fmt == "hbb" and data_fmt == "obb" and ckpt_fmts and "obb" not in ckpt_fmts:
+            st.warning("data root 是 OBB 数据，但 checkpoint 疑似 HBB 模型；如需按 <obb> 解析请手动切 format=obb。")
         max_new_tokens = st.slider("max_new_tokens", 64, 1024, 512, 64)
         if st.button("Release GPU"):
             st.success(release_cached_workers())
@@ -539,7 +561,7 @@ def main():
         if preview is not None:
             st.image(
                 draw_boxes(preview, gt_boxes, title="GT", color=GT_COLOR, fmt=ann_fmt),
-                caption=f"GT ({len(gt_boxes)} boxes)" if gt_boxes else "GT (none / not in JSONL)",
+                caption=f"GT ({len(gt_boxes)} boxes)" if gt_boxes else "GT 0：JSONL 无此 tile 的类框（空 tile，或 data root/annotation format 不匹配）",
                 use_container_width=True,
             )
 
@@ -574,15 +596,17 @@ def main():
                 for i, path in enumerate(ckpt_paths):
                     device = f"cuda:{i % n_gpu}"
                     worker = load_worker(path, device)
-                    boxes, none_n, logs, elapsed = run_detect(
+                    boxes, none_n, logs, elapsed, pred_fmt = run_detect(
                         worker, image, prompts, generation_mode, max_new_tokens, ann_fmt
                     )
-                    if gt_boxes:
+                    mism = pred_fmt != ann_fmt
+                    if mism:
+                        st.warning(f"{Path(path).name}: 输出格式与 annotation format 不一致（已按 {pred_fmt} 兜底解析用于显示，TP/FP/FN 已跳过）。")
+                    if gt_boxes and not mism:
                         tp, fp, fn = match_totals(boxes, gt_boxes, fmt=ann_fmt)
                     else:
                         tp, fp, fn = None, None, None
-                    compare_rows.append((path, boxes, none_n, logs, elapsed, tp, fp, fn))
-            except RuntimeError as e:
+                    compare_rows.append((path, boxes, none_n, logs, elapsed, tp, fp, fn, pred_fmt))
                 if "out of memory" in str(e).lower():
                     st.error(
                         "GPU OOM: drop a checkpoint or restart Streamlit with both GPUs visible."
@@ -596,7 +620,7 @@ def main():
 
             pred_cols = st.columns(len(compare_rows))
             raw_parts = []
-            for i, (path, boxes, none_n, logs, elapsed, tp, fp, fn) in enumerate(compare_rows):
+            for i, (path, boxes, none_n, logs, elapsed, tp, fp, fn, pred_fmt) in enumerate(compare_rows):
                 name = Path(path).name
                 color = PRED_PALETTE[i % len(PRED_PALETTE)]
                 caption = f"{name} | {len(boxes)} boxes | {elapsed:.1f}s"
@@ -611,7 +635,7 @@ def main():
                             boxes,
                             title=f"{name} none={none_n}/{len(prompts)}",
                             color=color,
-                            fmt=ann_fmt,
+                            fmt=pred_fmt,
                         ),
                         caption=caption,
                         use_container_width=True,
@@ -621,12 +645,14 @@ def main():
             return
 
         worker = load_worker(model_path)
-        boxes, none_n, logs, _elapsed = run_detect(
+        boxes, none_n, logs, _elapsed, pred_fmt = run_detect(
             worker, image, prompts, generation_mode, max_new_tokens, ann_fmt
         )
+        if pred_fmt != ann_fmt:
+            st.warning(f"模型输出格式与 annotation format 不一致：已按 {pred_fmt} 兜底解析用于显示；TP/FP/FN 与 GT 对照不可用，请核对侧栏格式/数据根。")
         with col_pred:
             st.image(
-                draw_boxes(image, boxes, title=f"pred none={none_n}/{len(prompts)}", color=PRED_COLOR, fmt=ann_fmt),
+                draw_boxes(image, boxes, title=f"pred none={none_n}/{len(prompts)}", color=PRED_COLOR, fmt=pred_fmt),
                 caption=f"prediction ({len(boxes)} boxes)",
                 use_container_width=True,
             )
