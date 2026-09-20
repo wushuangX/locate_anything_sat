@@ -36,8 +36,10 @@ DOTA_V1_CLASSES = [
     "swimming-pool",
     "helicopter",
 ]
+DOTA_V2_CLASSES = DOTA_V1_CLASSES + ["airport", "container-crane", "helipad"]
 BOX_RE = re.compile(r"<ref>(.*?)</ref><box><(\d+)><(\d+)><(\d+)><(\d+)></box>")
-NONE_RE = re.compile(r"<box>[Nn]one</box>", re.IGNORECASE)
+OBB_RE = re.compile(r"<ref>(.*?)</ref><obb><(\d+)><(\d+)><(\d+)><(\d+)><(\d+)></obb>")
+OBB_NONE_RE = re.compile(r"<obb>[Nn]one</obb>", re.IGNORECASE)
 PRED_COLOR = (255, 60, 60)
 PRED_PALETTE = [(255, 60, 60), (255, 140, 0), (180, 80, 255), (0, 180, 200)]
 GT_COLOR = (40, 220, 70)
@@ -67,9 +69,21 @@ DEFAULT_COMPARE_CKPTS = [
 ]
 DEFAULT_ROOT = "/data/locate_anything_sat/Embodied/data/dota_v1_hbb_448_mix_v1"
 
+def detect_format(data_root: str) -> str:
+    """数据根目录名含 'obb' → OBB 模式（<obb> 5-token + 旋转 IoU）。"""
+    return "obb" if "obb" in Path(data_root or "").name.lower() else "hbb"
 
-def parse_answer(answer: str):
+
+def none_re(fmt: str):
+    return OBB_NONE_RE if fmt == "obb" else NONE_RE
+
+
+def parse_answer(answer: str, fmt: str = "hbb"):
     boxes = []
+    if fmt == "obb":
+        for m in OBB_RE.finditer(answer or ""):
+            boxes.append((m.group(1), tuple(int(m.group(i)) for i in range(2, 7))))
+        return boxes
     for m in BOX_RE.finditer(answer or ""):
         boxes.append(
             (
@@ -79,7 +93,35 @@ def parse_answer(answer: str):
         )
     return boxes
 
-def iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+
+def _obb_token_to_px(box, img_w: int, img_h: int):
+    """token [0,1000] OBB → (cx,cy,w,h,θ°)，长度单位 = max(边)（与 eval to_pixel_obb 同约定）。"""
+    from eaglevl.train.obb_geometry import dequantize_obb
+
+    tile = max(int(img_w), int(img_h), 1)
+    return dequantize_obb(box[0], box[1], box[2], box[3], box[4], tile, img_w, img_h)
+
+
+def obb_corners_px(box, img_w: int, img_h: int):
+    """(cx,cy,w,h,θ°) 四角点（cv2 RotatedRect 约定：w 轴先旋转，图像 y 向下）。"""
+    import math
+
+    cx, cy, w, h, th = _obb_token_to_px(box, img_w, img_h)
+    t = math.radians(th)
+    ca, sa = math.cos(t), math.sin(t)
+    dx, dy = w / 2.0, h / 2.0
+    return [
+        (cx + ux * ca - uy * sa, cy + ux * sa + uy * ca)
+        for ux, uy in ((-dx, -dy), (dx, -dy), (dx, dy), (-dx, dy))
+    ]
+
+
+def iou(a, b, fmt: str = "hbb") -> float:
+    if fmt == "obb":
+        from eaglevl.train.obb_geometry import rotated_iou
+
+        # 方形 tile 下 token 空间与像素空间等比，IoU 不变 → 以 1000 为 tile 直接反量化
+        return rotated_iou(_obb_token_to_px(a, 1000, 1000), _obb_token_to_px(b, 1000, 1000))
     ix1 = max(a[0], b[0])
     iy1 = max(a[1], b[1])
     ix2 = min(a[2], b[2])
@@ -97,6 +139,7 @@ def match_boxes(
     preds: list[tuple[str, tuple]],
     gts: list[tuple[str, tuple]],
     iou_thr: float,
+    fmt: str = "hbb",
 ):
     """Greedy match by IoU, returns TP/FP/FN counts per class."""
     by_class_gt = defaultdict(list)
@@ -120,7 +163,7 @@ def match_boxes(
         scored = []
         for pi, (pidx, pbox) in enumerate(pred_items):
             for gi, (gidx, gbox) in enumerate(gt_items):
-                sc = iou(pbox, gbox)
+                sc = iou(pbox, gbox, fmt)
                 if sc >= iou_thr:
                     scored.append((sc, pi, gi))
         scored.sort(reverse=True)
@@ -137,28 +180,36 @@ def match_boxes(
     return tp, fp, fn
 
 
-def match_totals(preds, gts, iou_thr=0.5) -> tuple[int, int, int]:
-    tp, fp, fn = match_boxes(preds, gts, iou_thr)
+def match_totals(preds, gts, iou_thr=0.5, fmt: str = "hbb") -> tuple[int, int, int]:
+    tp, fp, fn = match_boxes(preds, gts, iou_thr, fmt)
     return sum(tp.values()), sum(fp.values()), sum(fn.values())
 
 
 
-def draw_boxes(img, boxes, title="", color=PRED_COLOR):
+def draw_boxes(img, boxes, title="", color=PRED_COLOR, fmt: str = "hbb"):
     im = img.convert("RGB").copy()
     scale = 2
     im = im.resize((im.width * scale, im.height * scale), Image.Resampling.NEAREST)
     draw = ImageDraw.Draw(im)
     w, h = img.size
     for label, box in boxes:
-        x1, y1, x2, y2 = box
-        x1, x2 = sorted((int(round(x1 / 1000 * w * scale)), int(round(x2 / 1000 * w * scale))))
-        y1, y2 = sorted((int(round(y1 / 1000 * h * scale)), int(round(y2 / 1000 * h * scale))))
-        if x2 <= x1 or y2 <= y1:
-            continue
-        draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+        if fmt == "obb":
+            if len(box) != 5 or box[2] <= 0 or box[3] <= 0:
+                continue
+            poly = [(x * scale, y * scale) for x, y in obb_corners_px(box, w, h)]
+            draw.line(poly + [poly[0]], fill=color, width=2, joint="curve")
+            x1 = int(round(min(p[0] for p in poly)))
+            ty = max(0, int(round(min(p[1] for p in poly))) - 12)
+        else:
+            x1, y1, x2, y2 = box
+            x1, x2 = sorted((int(round(x1 / 1000 * w * scale)), int(round(x2 / 1000 * w * scale))))
+            y1, y2 = sorted((int(round(y1 / 1000 * h * scale)), int(round(y2 / 1000 * h * scale))))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+            ty = max(0, y1 - 12)
         tag = (label or "")[:18]
         tw = 6 * len(tag) + 4
-        ty = max(0, y1 - 12)
         draw.rectangle([x1, ty, x1 + tw, ty + 12], fill=color)
         draw.text((x1 + 2, ty), tag, fill=(0, 0, 0), font=FONT)
     header_h = 24
@@ -204,14 +255,14 @@ def release_cached_workers() -> str:
 
 
 @st.cache_data
-def load_gt_index(data_root: str) -> dict:
+def load_gt_index(data_root: str, fmt: str = "hbb") -> dict:
     """Index detection GT per image.
 
     Mix JSONL repeats the same tile (T1–T5). Keep unique boxes whose
     <ref> is a DOTA class name; ignore T4 none and T5 referring phrases
     unless the tile has no class-labeled boxes.
     """
-    class_set = set(DOTA_V1_CLASSES)
+    class_set = set(DOTA_V2_CLASSES if fmt == "obb" else DOTA_V1_CLASSES)
     class_boxes: dict[str, list] = {}
     fallback: dict[str, list] = {}
     seen_class: dict[str, set] = {}
@@ -231,7 +282,7 @@ def load_gt_index(data_root: str) -> dict:
                     continue
                 gpt = sample.get("conversations", [{}, {}])
                 text = gpt[1]["value"] if len(gpt) > 1 else ""
-                parsed = parse_answer(text)
+                parsed = parse_answer(text, fmt)
                 if not parsed:
                     continue
                 det = [(lab, box) for lab, box in parsed if lab in class_set]
@@ -276,13 +327,13 @@ def resolve_image(upload, tile_path: str, data_root: str):
     return Image.open(p).convert("RGB")
 
 
-def lookup_gt(upload, tile_path: str, data_root: str):
+def lookup_gt(upload, tile_path: str, data_root: str, fmt: str = "hbb"):
     if upload is not None:
         return []
     p = resolve_path(tile_path, data_root)
     if p is None:
         return []
-    index = load_gt_index(data_root)
+    index = load_gt_index(data_root, fmt)
     key = (tile_path or "").strip().replace("\\", "/")
     if key in index:
         return index[key]
@@ -299,7 +350,7 @@ def lookup_gt(upload, tile_path: str, data_root: str):
     return []
 
 
-def run_detect(worker, image, prompts, generation_mode: str, max_new_tokens: int):
+def run_detect(worker, image, prompts, generation_mode: str, max_new_tokens: int, ann_fmt: str = "hbb"):
     import time
     logs, boxes = [], []
     none_n = 0
@@ -313,9 +364,9 @@ def run_detect(worker, image, prompts, generation_mode: str, max_new_tokens: int
             verbose=False,
         )
         answer = result.get("answer", "")
-        if NONE_RE.search(answer):
+        if none_re(ann_fmt).search(answer):
             none_n += 1
-        parsed = parse_answer(answer)
+        parsed = parse_answer(answer, ann_fmt)
         boxes.extend(parsed)
         logs.append(f"[{tag}]\nprompt: {prompt}\nanswer: {answer}\nparsed: {len(parsed)} boxes")
     return boxes, none_n, logs, time.perf_counter() - t0
@@ -381,7 +432,7 @@ def _ckpt_label(path: str, ckpt_root: str) -> str:
 def main():
     st.set_page_config(page_title="LocateAnything prompt viz", layout="wide")
     st.title("LocateAnything prompt viz")
-    st.caption("Green = GT from JSONL. Red = model. `{class}` is replaced per selected DOTA class.")
+    st.caption("Green = GT from JSONL. Red = model. `{class}` per selected DOTA class. OBB 数据根（名含 'obb'）自动切 <obb> 旋转框模式。")
 
     with st.sidebar:
         mode = st.radio("mode", ["single", "compare"], index=0, horizontal=True)
@@ -427,6 +478,12 @@ def main():
             else:
                 st.warning("No checkpoints under checkpoint root.")
         data_root = st.text_input("data root", DEFAULT_ROOT)
+        fmt_choice = st.selectbox(
+            "annotation format", ["auto", "hbb", "obb"], index=0,
+            help="auto: 数据根目录名含 'obb' → <obb> 5-token 解析 + 旋转 IoU + 多边形绘制",
+        )
+        ann_fmt = fmt_choice if fmt_choice != "auto" else detect_format(data_root)
+        st.caption(f"annotation format: **{ann_fmt}**")
         generation_mode = st.selectbox("generation_mode", ["hybrid", "fast", "slow"], index=0)
         max_new_tokens = st.slider("max_new_tokens", 64, 1024, 512, 64)
         if st.button("Release GPU"):
@@ -436,7 +493,7 @@ def main():
     template = st.text_area("prompt template", value=PRESETS[preset], height=80)
     classes = st.multiselect(
         "classes (used when template contains {class})",
-        DOTA_V1_CLASSES,
+        DOTA_V2_CLASSES if ann_fmt == "obb" else DOTA_V1_CLASSES,
         default=["small-vehicle", "ship", "plane", "storage-tank"],
     )
 
@@ -464,7 +521,7 @@ def main():
         st.caption(f"selected `{tile_path}`")
 
     preview = resolve_image(upload, tile_path, data_root)
-    gt_boxes = lookup_gt(upload, tile_path, data_root)
+    gt_boxes = lookup_gt(upload, tile_path, data_root, ann_fmt)
 
     if mode == "compare":
         col_in, col_gt = st.columns(2)
@@ -479,7 +536,7 @@ def main():
     with col_gt:
         if preview is not None:
             st.image(
-                draw_boxes(preview, gt_boxes, title="GT", color=GT_COLOR),
+                draw_boxes(preview, gt_boxes, title="GT", color=GT_COLOR, fmt=ann_fmt),
                 caption=f"GT ({len(gt_boxes)} boxes)" if gt_boxes else "GT (none / not in JSONL)",
                 use_container_width=True,
             )
@@ -516,10 +573,10 @@ def main():
                     device = f"cuda:{i % n_gpu}"
                     worker = load_worker(path, device)
                     boxes, none_n, logs, elapsed = run_detect(
-                        worker, image, prompts, generation_mode, max_new_tokens
+                        worker, image, prompts, generation_mode, max_new_tokens, ann_fmt
                     )
                     if gt_boxes:
-                        tp, fp, fn = match_totals(boxes, gt_boxes)
+                        tp, fp, fn = match_totals(boxes, gt_boxes, fmt=ann_fmt)
                     else:
                         tp, fp, fn = None, None, None
                     compare_rows.append((path, boxes, none_n, logs, elapsed, tp, fp, fn))
@@ -552,6 +609,7 @@ def main():
                             boxes,
                             title=f"{name} none={none_n}/{len(prompts)}",
                             color=color,
+                            fmt=ann_fmt,
                         ),
                         caption=caption,
                         use_container_width=True,
@@ -562,11 +620,11 @@ def main():
 
         worker = load_worker(model_path)
         boxes, none_n, logs, _elapsed = run_detect(
-            worker, image, prompts, generation_mode, max_new_tokens
+            worker, image, prompts, generation_mode, max_new_tokens, ann_fmt
         )
         with col_pred:
             st.image(
-                draw_boxes(image, boxes, title=f"pred none={none_n}/{len(prompts)}", color=PRED_COLOR),
+                draw_boxes(image, boxes, title=f"pred none={none_n}/{len(prompts)}", color=PRED_COLOR, fmt=ann_fmt),
                 caption=f"prediction ({len(boxes)} boxes)",
                 use_container_width=True,
             )
