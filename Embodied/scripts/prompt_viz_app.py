@@ -57,6 +57,14 @@ PRESETS = {
     "H duplicated class": "Locate all the instances that matches the following description: {class}</c>{class}.",
     "free prompt (no {class})": "Locate all the instances that matches the following description: small-vehicle.",
 }
+# OBB 训练/评测同款句式（convert_dota_obb_to_locany.py PROMPT_TEMPLATE / detect_oriented）：
+# 测 OBB 性能用这些；HBB 句式属轻度 off-distribution
+PRESETS_OBB = {
+    "A obb train/eval": "Locate all oriented instances that match the following description: {class}.",
+    "B obb multi-class </c>": "Locate all oriented instances that match the following description: {class}</c>{class}.",
+    "C obb single (referring)": "Locate a single oriented instance that matches the following description: {class}.",
+    "free prompt (no {class})": "Locate all oriented instances that match the following description: large-vehicle.",
+}
 
 DEFAULT_CKPT = "/data/locate_anything_sat/Embodied/work_dirs/dota_v1_hbb_448_mix_v1_lora_lda_2gpu_4k_15k_run1/checkpoint-15000"
 DEFAULT_CKPT_ROOT = "/data/locate_anything_sat/Embodied/work_dirs"
@@ -514,8 +522,9 @@ def main():
         if st.button("Release GPU"):
             st.success(release_cached_workers())
 
-    preset = st.selectbox("preset", list(PRESETS.keys()), index=0)
-    template = st.text_area("prompt template", value=PRESETS[preset], height=80)
+    preset_dict = PRESETS_OBB if ann_fmt == "obb" else PRESETS
+    preset = st.selectbox("preset", list(preset_dict.keys()), index=0)
+    template = st.text_area("prompt template", value=preset_dict[preset], height=80)
     classes = st.multiselect(
         "classes (used when template contains {class})",
         DOTA_V2_CLASSES if ann_fmt == "obb" else DOTA_V1_CLASSES,
