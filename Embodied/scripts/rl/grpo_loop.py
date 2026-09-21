@@ -115,14 +115,24 @@ def completion_logprob(model, processor, image, prompt, sequences, device, dtype
 
     full_ids = torch.cat([prompt_ids, comp.unsqueeze(0)], dim=1)
     attn = torch.ones(full_ids.shape, dtype=torch.long, device=device)
-    out = model(
-        pixel_values=pixel_values,
+    # 100k Qwen2.training 返回 (out, pos_loss_list) 且 SDPA 走 PBD train mask；
+    # LocateAnything.forward 只传 inputs_embeds，eval 的 inf mask 还要 input_ids。
+    # 与 generate 首步相同：extract_feature + mlp1，再 language_model(input_ids, visual_features)。
+    with torch.no_grad():
+        vit_embeds = model.extract_feature(pixel_values, image_grid_hws)
+        if image_grid_hws is not None:
+            vit_embeds = torch.cat(vit_embeds, dim=0)
+            vit_embeds = model.mlp1(vit_embeds)
+    out = model.language_model(
         input_ids=full_ids,
         attention_mask=attn,
-        image_grid_hws=image_grid_hws,
-        image_flags=None,
+        visual_features=vit_embeds,
+        image_token_index=model.config.image_token_index,
+        use_cache=False,
         return_dict=True,
     )
+    if isinstance(out, tuple):
+        out = out[0]
     logp = F.log_softmax(out.logits[:, :-1, :], dim=-1)
     token_logp = logp.gather(-1, full_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
     prompt_len = int(prompt_ids.size(1))
@@ -227,9 +237,8 @@ def main(argv=None) -> int:
                 flush=True,
             )
         else:
-            model.train()
-            model.vision_model.eval()
-            model.mlp1.eval()
+            # 保持 eval：见 completion_logprob。LoRA 仍 requires_grad；Qwen2.training 不能开。
+            model.eval()
             seq_logps = [
                 completion_logprob(
                     model,
@@ -250,7 +259,6 @@ def main(argv=None) -> int:
             torch.nn.utils.clip_grad_norm_(lora_params, 1.0)
             optimizer.step()
             optimizer.zero_grad()
-            model.eval()
             print(
                 f"step={step} loss={float(loss.detach().cpu()):.6f} "
                 f"mean_r={mean_r:.4f} std_r={std_r:.4f} "
