@@ -2,8 +2,8 @@
 """RL Phase A freeze-check gate（dryrun / timing / gate / summarize）。
 
 三个门阈值是设计定值，不许实现时调：
-  gate_rho     : 全部 parse_ok 样本上 Spearman(r_main, f1_05) ≥ 0.7
-  gate_decile  : r_main 十分位桶，桶均值 f1_05 的 top − bottom ≥ 0.20
+  gate_rho     : 全部 parse_ok 样本上 Spearman(r_main, f1_anchor) ≥ 0.7
+  gate_decile  : r_main 十分位桶，桶均值 f1_anchor 的 top − bottom ≥ 0.20
   gate_timing  : mean reward_seconds ≤ 0.25 × mean gen_seconds
 
 exit 1 的唯一合法后续是修 reward.py 后 `--stage summarize --rescore`
@@ -115,6 +115,7 @@ def score_one(answer: str, gt: list, gen_seconds: float) -> dict:
     r = reward.compute_reward(answer, gt, tile_size=TILE_SIZE)
     pred_boxes = reward.parse_answer(answer, TILE_SIZE)["boxes"]
     f1_05 = reward.f1_at_05(pred_boxes, gt)
+    f1_anc = reward.f1_anchor(pred_boxes, gt)
     reward_seconds = time.perf_counter() - t0
     return {
         "answer": answer,
@@ -122,6 +123,7 @@ def score_one(answer: str, gt: list, gen_seconds: float) -> dict:
         "r_eff": r["r_eff"],
         "f1_soft": r["f1_soft"],
         "f1_05": f1_05,
+        "f1_anchor": f1_anc,
         "mean_max_iou": r["mean_max_iou"],
         "n_raw": r["n_raw"],
         "n_nms": r["n_nms"],
@@ -355,8 +357,11 @@ def run_summarize(args) -> int:
     ok = [r for r in rows if r["parse_ok"]]
     n_ok = len(ok)
 
+    def _anc(row):
+        return float(row["f1_anchor"]) if "f1_anchor" in row else float(row["f1_05"])
+
     # --- gate_rho ---
-    rho = spearman([r["r_main"] for r in ok], [r["f1_05"] for r in ok]) if n_ok >= 2 else float("nan")
+    rho = spearman([r["r_main"] for r in ok], [_anc(r) for r in ok]) if n_ok >= 2 else float("nan")
     gate_rho = math.isfinite(rho) and rho >= RHO_THR
 
     # --- gate_decile ---
@@ -367,7 +372,7 @@ def run_summarize(args) -> int:
         n = len(srt)
         buckets = [srt[round(b * n / 10): round((b + 1) * n / 10)] for b in range(10)]
         buckets = [b for b in buckets if b]
-        bucket_means = [_mean([r["f1_05"] for r in b]) for b in buckets]
+        bucket_means = [_mean([_anc(r) for r in b]) for b in buckets]
         decile_diff = bucket_means[-1] - bucket_means[0]
     gate_decile = math.isfinite(decile_diff) and decile_diff >= DECILE_THR
 
@@ -382,8 +387,10 @@ def run_summarize(args) -> int:
     for r in ok:
         by_tile.setdefault(r["tile"], []).append(r["r_main"])
     tile_stds = [_std(vs) for vs in by_tile.values() if len(vs) >= 2]
-    r_eff_rho = (spearman([r["r_eff"] for r in ok], [r["f1_05"] for r in ok])
+    r_eff_rho = (spearman([r["r_eff"] for r in ok], [_anc(r) for r in ok])
                  if n_ok >= 2 else float("nan"))
+    rho_f105 = (spearman([r["r_main"] for r in ok], [r["f1_05"] for r in ok])
+                if n_ok >= 2 else float("nan"))
     diag = {
         "n_total": len(rows),
         "n_parse_ok": n_ok,
@@ -394,7 +401,9 @@ def run_summarize(args) -> int:
         "r_main_p50": _pct([r["r_main"] for r in ok], 0.50),
         "r_main_p90": _pct([r["r_main"] for r in ok], 0.90),
         "tau_ref_p10_tile_std_r": _pct(tile_stds, 0.10) if tile_stds else float("nan"),
-        "spearman_r_eff_f1_05": r_eff_rho,
+        "spearman_r_eff_f1_anchor": r_eff_rho,
+        "spearman_r_main_f1_05": rho_f105,
+        "anchor": "mean(F1@0.3, F1@0.5, F1@0.7)",
     }
 
     summary = {
@@ -406,7 +415,7 @@ def run_summarize(args) -> int:
         "rescored": bool(args.rescore),
         "gate_rho": {"value": rho, "threshold": RHO_THR, "pass": bool(gate_rho)},
         "gate_decile": {"diff": decile_diff, "threshold": DECILE_THR,
-                        "bucket_means_f1_05": bucket_means, "pass": bool(gate_decile)},
+                        "bucket_means_f1_anchor": bucket_means, "pass": bool(gate_decile)},
         "gate_timing": {"mean_reward_seconds": mean_reward, "mean_gen_seconds": mean_gen,
                         "ratio": timing_ratio, "threshold": TIMING_RATIO_THR,
                         "pass": bool(gate_timing)},
@@ -422,7 +431,7 @@ def run_summarize(args) -> int:
     print(f"  gate_decile : top-bottom={decile_diff:.4f} (thr >= {DECILE_THR}) "
           f"-> {'PASS' if gate_decile else 'FAIL'}")
     if bucket_means:
-        print(f"    decile bucket mean f1_05 (bottom->top): "
+        print(f"    decile bucket mean f1_anchor (bottom->top): "
               + " ".join(f"{m:.3f}" for m in bucket_means))
     print(f"  gate_timing : reward/gen={timing_ratio:.4f} (thr <= {TIMING_RATIO_THR}; "
           f"reward={mean_reward:.4f}s gen={mean_gen:.2f}s) -> "

@@ -210,11 +210,10 @@ def compute_reward(text: str, gt: list, *, nms_thr: float = 0.7, lam_dup: float 
     return _reward_from_boxes(parse["boxes"], gt, n_raw, nms_thr=nms_thr, lam_dup=lam_dup)
 
 
-def f1_at_05(pred: list, gt: list) -> float:
-    """IoU≥0.5、同 label、贪心一对一匹配（按 IoU 降序，每 pred/gt 至多一次）的 F1。
+def f1_at(pred: list, gt: list, iou_thr: float = 0.5) -> float:
+    """同 label、贪心一对一、IoU≥iou_thr 的 F1。
 
-    空对空（TN，正确拒答）= 1.0；空 GT 却吐框 / 有 GT 却空 pred = 0.0。
-    有框时语义对齐 eval_baseline_dota.py::match_boxes；逐样本值，无 per-class 聚合。
+    空对空（TN）= 1.0；空 GT 却吐框 / 有 GT 却空 pred = 0.0。
     """
     pred = [p for p in pred if p[3] > p[1] and p[4] > p[2]]
     gt = [g for g in gt if g[3] > g[1] and g[4] > g[2]]
@@ -236,7 +235,7 @@ def f1_at_05(pred: list, gt: list) -> float:
             if union <= 0:
                 continue
             sc = inter / union
-            if sc >= 0.5:
+            if sc >= iou_thr:
                 scored.append((sc, i, j))
     scored.sort(reverse=True)
 
@@ -249,6 +248,15 @@ def f1_at_05(pred: list, gt: list) -> float:
     p = tp / len(pred)
     r = tp / len(gt)
     return 2.0 * p * r / (p + r) if (p + r) > 0 else 0.0
+
+
+def f1_at_05(pred: list, gt: list) -> float:
+    return f1_at(pred, gt, 0.5)
+
+
+def f1_anchor(pred: list, gt: list) -> float:
+    """门禁锚点：F1@0.3/0.5/0.7 算术平均（缓解 0.5 阶跃与高分段并列）。"""
+    return (f1_at(pred, gt, 0.3) + f1_at(pred, gt, 0.5) + f1_at(pred, gt, 0.7)) / 3.0
 
 
 # --------------------------------------------------------------------------- #
@@ -355,6 +363,12 @@ def selftest() -> None:
     assert _approx(f1_at_05([], [("a", 0, 0, 10, 10)]), 0.0)  # 漏检
     assert _approx(f1_at_05([("a", 0, 0, 10, 10)], []), 0.0)  # 虚警
     assert _approx(f1_at_05([], []), 1.0)  # 双空 TN
+    # 方案 B：IoU=0.6 的两框 → F1@0.3=F1@0.5=2/3，F1@0.7=0 → 锚点 4/9
+    two = [("a", 0, 0, 6, 10), ("a", 4, 0, 10, 10)]
+    one = [("a", 0, 0, 10, 10)]
+    assert _approx(f1_anchor(two, one), (2.0 / 3.0 + 2.0 / 3.0 + 0.0) / 3.0)
+    assert _approx(f1_anchor([], []), 1.0)
+    assert _approx(f1_anchor(one, one), 1.0)
 
     print("reward.py selftest: all cases passed")
 
