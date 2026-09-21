@@ -25,7 +25,15 @@ import reward  # noqa: E402
 import rollout  # noqa: E402
 
 TILE_SIZE = freeze_check.TILE_SIZE
+SMALL_AREA = 32.0 ** 2
 
+
+def n_small_gt(gt: list) -> int:
+    n = 0
+    for _lab, x1, y1, x2, y2 in gt:
+        if (x2 - x1) * (y2 - y1) < SMALL_AREA:
+            n += 1
+    return n
 
 def grpo_advantages(rewards: list[float], eps: float = 1e-8) -> tuple[list[float], bool]:
     """组内标准化优势。std < eps → 全 0 且 skip=True（本 step 不 optimizer.step）。"""
@@ -58,6 +66,12 @@ def parse_args(argv=None):
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--save-steps", type=int, default=50)
     p.add_argument("--device", default="cuda")
+    p.add_argument(
+        "--min-small-gt",
+        type=int,
+        default=0,
+        help="只保留 COCO-small GT 数 ≥ 该值的 tile（0=不过滤）",
+    )
     return p.parse_args(argv)
 
 
@@ -212,6 +226,19 @@ def main(argv=None) -> int:
     if not tiles:
         raise RuntimeError(f"no samples in {args.ann}")
     print(f"[grpo] {len(tiles)} unique tiles from {args.ann}", flush=True)
+    if args.min_small_gt > 0:
+        kept = []
+        for row in tiles:
+            gt = freeze_check.parse_gt(row)
+            if n_small_gt(gt) >= args.min_small_gt:
+                kept.append(row)
+        print(
+            f"[grpo] smallGT>={args.min_small_gt}: {len(kept)}/{len(tiles)} tiles",
+            flush=True,
+        )
+        tiles = kept
+        if not tiles:
+            raise RuntimeError(f"no tiles with smallGT>={args.min_small_gt}")
 
     worker = rollout.make_worker(args.model_path, device=args.device)
     model = worker.model
