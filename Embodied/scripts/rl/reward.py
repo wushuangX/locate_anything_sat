@@ -213,11 +213,14 @@ def compute_reward(text: str, gt: list, *, nms_thr: float = 0.7, lam_dup: float 
 def f1_at_05(pred: list, gt: list) -> float:
     """IoU≥0.5、同 label、贪心一对一匹配（按 IoU 降序，每 pred/gt 至多一次）的 F1。
 
-    语义对齐 eval_baseline_dota.py::match_boxes；逐样本值，无 per-class 聚合。
+    空对空（TN，正确拒答）= 1.0；空 GT 却吐框 / 有 GT 却空 pred = 0.0。
+    有框时语义对齐 eval_baseline_dota.py::match_boxes；逐样本值，无 per-class 聚合。
     """
     pred = [p for p in pred if p[3] > p[1] and p[4] > p[2]]
     gt = [g for g in gt if g[3] > g[1] and g[4] > g[2]]
-    if not pred or not gt:
+    if len(gt) == 0:
+        return 1.0 if len(pred) == 0 else 0.0
+    if len(pred) == 0:
         return 0.0
 
     scored = []
@@ -349,8 +352,9 @@ def selftest() -> None:
     f = f1_at_05([("a", 0, 0, 6, 10), ("a", 4, 0, 10, 10)], [("a", 0, 0, 10, 10)])
     assert _approx(f, 2.0 * 0.5 * 1.0 / 1.5), f
     assert _approx(f1_at_05([("b", 0, 0, 10, 10)], [("a", 0, 0, 10, 10)]), 0.0)
-    assert _approx(f1_at_05([], [("a", 0, 0, 10, 10)]), 0.0)
-    assert _approx(f1_at_05([("a", 0, 0, 10, 10)], []), 0.0)
+    assert _approx(f1_at_05([], [("a", 0, 0, 10, 10)]), 0.0)  # 漏检
+    assert _approx(f1_at_05([("a", 0, 0, 10, 10)], []), 0.0)  # 虚警
+    assert _approx(f1_at_05([], []), 1.0)  # 双空 TN
 
     print("reward.py selftest: all cases passed")
 
