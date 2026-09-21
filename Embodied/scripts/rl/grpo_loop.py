@@ -262,9 +262,15 @@ def main(argv=None) -> int:
             )
         else:
             # 保持 eval：见 completion_logprob。LoRA 仍 requires_grad；Qwen2.training 不能开。
+            # 逐条 forward+backward 再一次 step（与 stack.mean() 等价，24GB 上不能挂 G 张图）。
             model.eval()
-            seq_logps = [
-                completion_logprob(
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            optimizer.zero_grad(set_to_none=True)
+            g = max(len(samples), 1)
+            loss_acc = 0.0
+            for s, a in zip(samples, adv):
+                lp = completion_logprob(
                     model,
                     worker.processor,
                     img,
@@ -274,17 +280,14 @@ def main(argv=None) -> int:
                     worker.dtype,
                     worker,
                 )
-                for s in samples
-            ]
-            seq_logp = torch.stack(seq_logps)
-            adv_t = torch.tensor(adv, device=seq_logp.device, dtype=seq_logp.dtype)
-            loss = -(adv_t.detach() * seq_logp).mean()
-            loss.backward()
+                li = -(lp * float(a)) / g
+                li.backward()
+                loss_acc += float(li.detach().cpu())
             torch.nn.utils.clip_grad_norm_(lora_params, 1.0)
             optimizer.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             print(
-                f"step={step} loss={float(loss.detach().cpu()):.6f} "
+                f"step={step} loss={loss_acc:.6f} "
                 f"mean_r={mean_r:.4f} std_r={std_r:.4f} "
                 f"n_skip={n_skip} parse_ok_frac={parse_ok_frac:.3f}",
                 flush=True,
