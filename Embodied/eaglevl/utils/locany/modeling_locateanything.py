@@ -335,6 +335,7 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
     ) -> torch.LongTensor:
 
         verbose = generate_kwargs.pop('verbose', False)
+        return_ids = bool(generate_kwargs.pop("return_ids", False))
         start_time = time.time()
         prefill_time = None
 
@@ -560,8 +561,20 @@ class LocateAnythingForConditionalGeneration(LocateAnythingPreTrainedModel, Gene
                         f"switch_to_ar={switch_to_ar_count}\n"
                 print(out_info)
 
+                if return_ids:
+                    return {
+                        "answer": response[0],
+                        "sequences": generated_ids.detach().cpu().long(),
+                        "history": sampling_history,
+                        "stats": out_info,
+                    }
                 return response[0], sampling_history, out_info
 
+            if return_ids:
+                return {
+                    "answer": response[0],
+                    "sequences": generated_ids.detach().cpu().long(),
+                }
             return response[0]
         finally:
             inner.block_size = old_bs

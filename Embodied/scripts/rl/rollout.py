@@ -35,7 +35,7 @@ def sample_tile(worker, image, prompt: str, n: int, *, temperature: float = 1.0,
 
     max_new_tokens=512 ≈ 20 框预算；超长截断由 reward 端 n_raw>20 判非法承接。
     slow 模式无批量路径，逐条采样并计时。
-    返回 [{answer, gen_seconds}]。
+    返回 [{answer, gen_seconds, sequences}]。
     """
     out = []
     for _ in range(n):
@@ -46,8 +46,13 @@ def sample_tile(worker, image, prompt: str, n: int, *, temperature: float = 1.0,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             verbose=False,
+            return_ids=True,
             **RL_GENERATION_KW,
         )
         dt = time.perf_counter() - t0
-        out.append({"answer": res["answer"], "gen_seconds": dt})
+        if not isinstance(res, dict) or "sequences" not in res:
+            raise RuntimeError(
+                "generate() did not return sequences; checkpoint generate() missing return_ids"
+            )
+        out.append({"answer": res["answer"], "gen_seconds": dt, "sequences": res["sequences"]})
     return out

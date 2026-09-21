@@ -201,6 +201,7 @@ class LocateAnythingWorker:
         visual_prompt_box_format: str = "normalized_1000",
         replace_text: Optional[str] = None,
         n_future_tokens: Optional[int] = None,
+        return_ids: bool = False,
     ) -> dict:
         messages = self._build_messages(
             image=image,
@@ -228,6 +229,8 @@ class LocateAnythingWorker:
         generate_kw = {}
         if n_future_tokens is not None:
             generate_kw["n_future_tokens"] = n_future_tokens
+        if return_ids:
+            generate_kw["return_ids"] = True
         response = self.model.generate(
             pixel_values=pixel_values,
             input_ids=input_ids,
@@ -246,6 +249,8 @@ class LocateAnythingWorker:
             **generate_kw,
         )
 
+        if isinstance(response, dict):
+            return response
         result = {"answer": response[0] if isinstance(response, tuple) else response}
         if isinstance(response, tuple) and len(response) >= 3:
             result["history"] = response[1]
@@ -269,6 +274,7 @@ class LocateAnythingWorker:
         visual_prompt_box_format: str = "normalized_1000",
         replace_text: Optional[str] = None,
         n_future_tokens: Optional[int] = None,
+        return_ids: bool = False,
     ) -> dict:
         """
         Run a single perception query.
@@ -295,7 +301,7 @@ class LocateAnythingWorker:
             dict with keys: "answer", "stats" (optional), "history" (optional).
         """
         has_visual_prompt = visual_prompt is not None or visual_prompt_box is not None
-        if self.use_batch_runtime and not has_visual_prompt and n_future_tokens is None:
+        if self.use_batch_runtime and not has_visual_prompt and n_future_tokens is None and not return_ids:
             return self.predict_batch(
                 [(image, question)],
                 generation_mode=generation_mode,
@@ -322,6 +328,7 @@ class LocateAnythingWorker:
             visual_prompt_box_format=visual_prompt_box_format,
             replace_text=replace_text,
             n_future_tokens=n_future_tokens,
+            return_ids=return_ids,
         )
 
     @torch.no_grad()
