@@ -104,8 +104,10 @@ def completion_logprob(model, processor, image, prompt, sequences, device, dtype
     prompt_ids = inputs["input_ids"].to(device)
     pixel_values = inputs["pixel_values"].to(device=device, dtype=dtype)
     image_grid_hws = inputs.get("image_grid_hws", None)
-    if image_grid_hws is not None and hasattr(image_grid_hws, "to"):
-        image_grid_hws = image_grid_hws.to(device)
+    if image_grid_hws is not None:
+        if not torch.is_tensor(image_grid_hws):
+            image_grid_hws = torch.as_tensor(image_grid_hws, dtype=torch.int32)
+        image_grid_hws = image_grid_hws.to(device=device, dtype=torch.int32)
 
     comp = sequences.view(-1).to(device)
     if comp.numel() == 0:
