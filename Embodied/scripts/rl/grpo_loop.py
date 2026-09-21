@@ -116,21 +116,45 @@ def completion_logprob(model, processor, image, prompt, sequences, device, dtype
     full_ids = torch.cat([prompt_ids, comp.unsqueeze(0)], dim=1)
     attn = torch.ones(full_ids.shape, dtype=torch.long, device=device)
     # 100k Qwen2.training 返回 (out, pos_loss_list) 且 SDPA 走 PBD train mask；
-    # LocateAnything.forward 只传 inputs_embeds，eval 的 inf mask 还要 input_ids。
+    # LocateAnything.forward 只传 inputs_embeds，eval inf mask 还要 input_ids。
     # 与 generate 首步相同：extract_feature + mlp1，再 language_model(input_ids, visual_features)。
+    # LoRA enable_input_require_grads 让 embedding 成 leaf，image_processing 的 inplace 会炸 → clone。
     with torch.no_grad():
         vit_embeds = model.extract_feature(pixel_values, image_grid_hws)
         if image_grid_hws is not None:
             vit_embeds = torch.cat(vit_embeds, dim=0)
             vit_embeds = model.mlp1(vit_embeds)
-    out = model.language_model(
-        input_ids=full_ids,
-        attention_mask=attn,
-        visual_features=vit_embeds,
-        image_token_index=model.config.image_token_index,
-        use_cache=False,
-        return_dict=True,
-    )
+    qwen = model.language_model
+    while not hasattr(qwen, "image_processing") and hasattr(qwen, "model"):
+        qwen = qwen.model
+    orig_ip = qwen.image_processing
+
+    def _cloned_image_processing(input_ids, visual_features, image_token_index):
+        input_embeds = qwen.get_input_embeddings()(input_ids)
+        if visual_features is None:
+            return input_embeds
+        B, N, C = input_embeds.shape
+        input_embeds = input_embeds.reshape(B * N, C).clone()
+        selected = input_ids.reshape(B * N) == image_token_index
+        n = int(selected.sum())
+        if n:
+            input_embeds[selected] = visual_features.reshape(-1, C).to(
+                dtype=input_embeds.dtype, device=input_embeds.device
+            )[:n]
+        return input_embeds.reshape(B, N, C)
+
+    qwen.image_processing = _cloned_image_processing
+    try:
+        out = model.language_model(
+            input_ids=full_ids,
+            attention_mask=attn,
+            visual_features=vit_embeds,
+            image_token_index=model.config.image_token_index,
+            use_cache=False,
+            return_dict=True,
+        )
+    finally:
+        qwen.image_processing = orig_ip
     if isinstance(out, tuple):
         out = out[0]
     logp = F.log_softmax(out.logits[:, :-1, :], dim=-1)
