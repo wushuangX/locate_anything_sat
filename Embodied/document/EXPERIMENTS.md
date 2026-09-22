@@ -52,6 +52,15 @@
 
 `scripts/run_dota_v1_hbb_448_7gpu_train_with_val.sh` 与 `shell/train-dota-obb-lora.sh` **从未跑满**。
 
+## RL（GRPO）实验
+
+基于 #4 最终权重的 on-policy GRPO（单卡、无 KL）。详见 [EXPERIMENT_rl_grpo_hbb.md](EXPERIMENT_rl_grpo_hbb.md)。
+
+| run | 目录 | 数据 | G | 步数 | 结论 |
+|---|---|---|---:|---:|---|
+| A | `work_dirs/rl_grpo_hbb_100k/` | 全池 15542 tile | 8 | 500 | 无信号：奖励饱和，skip 16.8%，密集团指标与 #4 持平 |
+| B | `work_dirs/rl_grpo_hbb_dense_g16_2k5/` | smallGT≥10 的 712 tile | 16 | 1000（原计划 2500，watcher 终止） | **负迁移**：train reward↑ 但密集团 small AP50 0.275→0.197（配对 3/3 负）；奖励/协议错位，ckpt 作废 |
+
 ## 新 run 怎么记
 
 复制本目录 `EXPERIMENT_*.md` 模板：Setup（host / 数据版本 / recipe / 超参）→ Training（墙钟、loss）→ Val protocol（文件路径）→ Results（表）→ Reading → Follow-ups。并在上表加一行。不要把 loss 或 50-tile F1 写成 COCO mAP。
