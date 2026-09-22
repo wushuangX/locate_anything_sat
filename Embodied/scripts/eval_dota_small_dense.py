@@ -210,7 +210,7 @@ def main() -> int:
         chosen = rng.sample(pool, k)
         print(f"[seed={seed}] {k} tiles", flush=True)
         metrics, records = run_seed(worker, args, chosen, seed)
-        stem = f"{args.name}_smalldense50_seed{seed}"
+        stem = f"{args.name}_smalldense{args.num_samples}_seed{seed}"
         (out_dir / f"{stem}.json").write_text(
             json.dumps(metrics, indent=2, ensure_ascii=False) + "\n"
         )
@@ -261,10 +261,10 @@ def main() -> int:
             ),
         },
         "per_seed_files": [
-            f"{args.name}_smalldense50_seed{s}.json" for s in seeds
+            f"{args.name}_smalldense{args.num_samples}_seed{s}.json" for s in seeds
         ],
     }
-    sum_path = out_dir / f"{args.name}_smalldense50_summary.json"
+    sum_path = out_dir / f"{args.name}_smalldense{args.num_samples}_summary.json"
     sum_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
     print("SUMMARY", json.dumps(summary["mean_std"], indent=2), flush=True)
     print(f"Wrote {sum_path}", flush=True)
