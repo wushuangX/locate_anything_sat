@@ -363,6 +363,7 @@ def _save_ckpt(worker, output_dir: Path, step: int, optimizer, policy_name: str,
     dest.mkdir(parents=True, exist_ok=True)
     full_sd = worker.model.state_dict()
     filtered = {k: v for k, v in full_sd.items() if f".{REFERENCE_ADAPTER}." not in k}
+    n_dropped = len(full_sd) - len(filtered)
     worker.model.save_pretrained(dest, state_dict=filtered)
     worker.tokenizer.save_pretrained(dest)   # resume/eval 需要从 checkpoint 直接加载
     worker.processor.save_pretrained(dest)
