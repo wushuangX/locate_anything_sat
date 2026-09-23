@@ -133,7 +133,11 @@ def compute_fixed_iou_metrics(records: list[dict], iou_thr: float = 0.5) -> dict
     per_class: dict[str, dict] = defaultdict(lambda: {"npos": 0, "tp": 0, "fp": 0, "fn": 0})
 
     for rec in records:
-        gts = [(lab, tuple(box)) for lab, box in rec["gt_boxes"]]
+        raw_gt = rec.get("gt_boxes")
+        if raw_gt is not None:
+            gts = [(lab, tuple(box)) for lab, box in raw_gt]
+        else:
+            gts = [(g["label"], tuple(g["box"])) for g in rec["gt"]]
         preds = [(p["prompt_class"], p["label"], tuple(p["box"])) for p in rec["pred"]]
 
         scored = []
