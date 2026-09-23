@@ -370,6 +370,7 @@ def _save_ckpt(worker, output_dir: Path, step: int, optimizer, policy_name: str,
     state = dict(extra_state)
     state["optimizer"] = optimizer.state_dict()
     state["global_step"] = step
+    state["policy_adapter"] = policy_name
     state["reference_adapter_state"] = get_peft_model_state_dict(
         peft_model, adapter_name=REFERENCE_ADAPTER)
     torch.save(state, dest / "trainer_state.pt")
