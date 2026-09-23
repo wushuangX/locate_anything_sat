@@ -68,6 +68,13 @@ resume 后总指标持续回升，d1500（全局 1500）AP50/AP **越过基线**
 
 续训 `work_dirs/rl_grpo_hbb_dense_g16_2k5_resume`（从 ckpt-1000 起，本地 1500 步 ≈ 全局 2500，watcher 归档 `snapshots/checkpoint-resume*`）：495 步时 skip 率 0.8%、parse_ok 常 1.0、train reward 仍高——奖励继续被吃分，与终判趋势一致。
 
+### Resume run 终止记录（2026-09-23）
+
+- 终止时间：2026-09-23 18:42 UTC（SIGTERM 至进程组 83493；launcher 83495 干净退出，子进程零残留）。**应用户指示提前停止**，未等到 checkpoint-1000 边界（v2 watchdog 已取消，未发信号即手动终止）。
+- 最终状态：止步 **step 857**；最后一个完整 checkpoint 为 `resume-750`（已快照 `snapshots/checkpoint-resume750`）。step 750→857 未保存，按用户决策弃用。
+- 止步时训练指标：parse_ok 0.5–1.0 振荡、train reward 仍高位——与"奖励被吃分"终判一致，无新信息。
+- v2 闭环（RL-single 数据 / reward v3 / 组内 gate / reference-KL GRPO / canonical eval）已落地，见下文 v2 各节。
+
 ## Follow-ups（未做）
 
 - 修奖励/协议后再重启 RL：单类句式对齐 eval、按 GT 上限放行框数或去掉 20 框硬门、面积加权 `r_main`
