@@ -117,6 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-empty", action="store_true", help="Write <box>none</box> samples for empty tiles")
     parser.add_argument("--task-mix", action="store_true", default=True, help="Emit a static mixed-task JSONL: T1 all-classes detection, T2 single-class, T3 class subset, T4 pure negative, T5 referring (default on)")
     parser.add_argument("--no-task-mix", action="store_false", dest="task_mix", help="Restore the legacy one all-classes sample per box chunk")
+    parser.add_argument("--samples-per-tile", type=int, default=6, help="Task-mix draws per non-empty tile (ignored with --no-task-mix)")
     parser.add_argument("--emit-rl-single-class", action="store_true",
                         help="Also emit full single-class GT rows for RL (train split, non-empty tiles): one row per (tile, class), never chunked, no T4/T5 mixing")
     parser.add_argument("--internal-val-ratio", type=float, default=0.1, help="Fraction of train-split source images held out as internal-val (task-mix only)")
@@ -151,8 +152,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--samples-per-tile must be >= 1")
     if not (0.0 < args.internal_val_ratio < 1.0):
         raise ValueError("--internal-val-ratio must be in (0, 1)")
-    if args.samples_per_tile < 1:
-        raise ValueError("--samples-per-tile must be >= 1")
+    if args.reuse_tiles_from is not None and not args.reuse_tiles_from.is_dir():
+        raise ValueError("--reuse-tiles-from must be an existing directory")
     if args.emit_rl_single_class and not args.task_mix:
         raise ValueError("--emit-rl-single-class requires the default task-mix pipeline (train 9:1 internal-val partitioning)")
 
