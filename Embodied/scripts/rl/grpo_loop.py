@@ -182,20 +182,23 @@ def _prepare_policy(model) -> tuple[list, str]:
         if peft_model is None:
             raise RuntimeError("language_model is not a PeftModel after wrap_llm_lora")
 
-    existing = list(peft_model.peft_config.keys())
-    if len(existing) == 1:
-        policy_name = existing[0]
-    elif len(existing) == 0:
-        raise RuntimeError("PeftModel has no adapters after load/wrap")
-    else:
-        raise RuntimeError(f"multiple existing adapters {existing}; refusing to guess policy")
-
     if REFERENCE_ADAPTER in existing:
         raise RuntimeError(f"adapter {REFERENCE_ADAPTER!r} already exists in checkpoint")
     ref_cfg = copy.deepcopy(peft_model.peft_config[policy_name])
     peft_model.add_adapter(REFERENCE_ADAPTER, ref_cfg)
     ref_state = get_peft_model_state_dict(peft_model, adapter_name=policy_name)
     set_peft_model_state_dict(peft_model, ref_state, adapter_name=REFERENCE_ADAPTER)
+    # add_adapter 建出的新 adapter 继承 base dtype（bf16），而 checkpoint 的 policy
+    # adapter 常为 fp32；dtype 不一致会让 ref/pol 前向舍入不同（fresh run KL≠0）。
+    # torch.equal 跨 dtype 按值比较查不出这种差异，必须显式统一到 policy dtype。
+    pol_named = {n: p for n, p in model.named_parameters() if "lora_" in n}
+    for n, p in pol_named.items():
+        if f".{REFERENCE_ADAPTER}." not in n:
+            continue
+        twin = n.replace(f".{REFERENCE_ADAPTER}.", f".{policy_name}.")
+        src = pol_named.get(twin)
+        if src is not None and p.dtype != src.dtype:
+            p.data = p.data.to(src.dtype)
     peft_model.set_adapter(policy_name)
 
     # requires-grad：只有 policy LoRA 可训练；reference / vision / MLP / base 全冻结
