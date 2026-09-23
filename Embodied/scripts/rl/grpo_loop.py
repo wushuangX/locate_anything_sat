@@ -182,6 +182,13 @@ def _prepare_policy(model) -> tuple[list, str]:
         if peft_model is None:
             raise RuntimeError("language_model is not a PeftModel after wrap_llm_lora")
 
+    existing = list(peft_model.peft_config.keys())
+    if len(existing) == 1:
+        policy_name = existing[0]
+    elif len(existing) == 0:
+        raise RuntimeError("PeftModel has no adapters after load/wrap")
+    else:
+        raise RuntimeError(f"multiple existing adapters {existing}; refusing to guess policy")
     if REFERENCE_ADAPTER in existing:
         raise RuntimeError(f"adapter {REFERENCE_ADAPTER!r} already exists in checkpoint")
     ref_cfg = copy.deepcopy(peft_model.peft_config[policy_name])
