@@ -320,6 +320,7 @@ python scripts/convert_dota_hbb_to_locany.py \
 - **train 9:1 内部验证**：按源图（非 tile）随机划分，输出 `*_train_mix_*.jsonl` 与 `*_internal_val_mix_*.jsonl`。
 - **官方 val 双渲染**：`*_test_t1_*.jsonl`（纯全类 T1，供 `eval_baseline_dota.py` 与 val 监控使用，**勿指向 mix 文件**）与 `*_test_mix_*.jsonl`（与 train 相同的混合发射）。
 - **`--reuse-tiles-from DIR`**：复用既有输出的 `tiles/`（缺失 tile 记入 `tiles_missing` 并跳过），新输出目录的 `tiles` 为指向 `DIR/tiles` 的符号链接；旧 `data/dota_v1_hbb_448/` 保持原样不动。
+- **`--emit-rl-single-class`**（默认关）：对 train split 非空 tile 额外输出 RL 单类完整 GT 标注 `*_train_rl_single_hbb_{tile}.jsonl` 与 `*_internal_val_rl_single_hbb_{tile}.jsonl`——每个 `(tile, 类)` 一行、prompt 复用 `build_prompt([label])`、answer 含该 tile 该类**全部** kept 框（不 chunk、不混 T4/T5）。单独生成 `<recipe_name>_rl_single.json`（只含 `train_rl_single`，不混入 SFT recipe）；metadata 记录 `rl_single_samples_written/max_boxes/class_counts` 与标注相对路径。这是 RL（GRPO）训练/奖励门唯一合法的训练输入。
 - **几何增强 JSONL（`scripts/augment_locany_jsonl.py`）**：对既有 0° mix JSONL 离线生成 `*_rot90/_rot180/_rot270/_hflip.jsonl`（token 空间改写 `<box>` 坐标，像素不动），训练 recipe 用五个 key（`rotate`/`hflip` 字段）在加载时对图像做对应 PIL 变换；T5 指代样本（leftmost/…、single-instance prompt）自动丢弃；配合 `color_jitter: true` 做亮度/对比度/饱和度抖动。评估/Streamlit 仍只用 0° 文件。
 
 **小目标专用参考数据集**：AI-TOD（专为微小目标，8 类，目标均值 12.8px）、VisDrone（无人机视角密集小目标）、xView（超高分辨率）、DOTA（遥感旋转目标）、DIOR。优先用 AI-TOD / VisDrone 验证小目标能力。

@@ -65,12 +65,17 @@ class SplitStats:
     tiles_missing: int = 0
     n_internal_val_images: int = 0
     n_train_images: int = 0
+    rl_single_samples_written: int = 0
+    rl_single_max_boxes: int = 0
+    rl_single_class_counts: Counter | None = None
 
     def __post_init__(self) -> None:
         if self.class_counts is None:
             self.class_counts = Counter()
         if self.task_counts is None:
             self.task_counts = Counter()
+        if self.rl_single_class_counts is None:
+            self.rl_single_class_counts = Counter()
 
     def to_dict(self) -> dict:
         return {
@@ -89,6 +94,9 @@ class SplitStats:
             "tiles_missing": self.tiles_missing,
             "n_internal_val_images": self.n_internal_val_images,
             "n_train_images": self.n_train_images,
+            "rl_single_samples_written": self.rl_single_samples_written,
+            "rl_single_max_boxes": self.rl_single_max_boxes,
+            "rl_single_class_counts": dict(sorted(self.rl_single_class_counts.items())),
         }
 
 
@@ -109,7 +117,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-empty", action="store_true", help="Write <box>none</box> samples for empty tiles")
     parser.add_argument("--task-mix", action="store_true", default=True, help="Emit a static mixed-task JSONL: T1 all-classes detection, T2 single-class, T3 class subset, T4 pure negative, T5 referring (default on)")
     parser.add_argument("--no-task-mix", action="store_false", dest="task_mix", help="Restore the legacy one all-classes sample per box chunk")
-    parser.add_argument("--samples-per-tile", type=int, default=6, help="Task-mix draws per non-empty tile (ignored with --no-task-mix)")
+    parser.add_argument("--emit-rl-single-class", action="store_true",
+                        help="Also emit full single-class GT rows for RL (train split, non-empty tiles): one row per (tile, class), never chunked, no T4/T5 mixing")
     parser.add_argument("--internal-val-ratio", type=float, default=0.1, help="Fraction of train-split source images held out as internal-val (task-mix only)")
     parser.add_argument("--reuse-tiles-from", type=Path, default=None, help="Existing converter output root whose tiles/ directory to reuse instead of re-extracting")
     parser.add_argument("--tile-format", choices=["png", "jpg"], default="png")
@@ -142,8 +151,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--samples-per-tile must be >= 1")
     if not (0.0 < args.internal_val_ratio < 1.0):
         raise ValueError("--internal-val-ratio must be in (0, 1)")
-    if args.reuse_tiles_from is not None and not args.reuse_tiles_from.is_dir():
-        raise ValueError("--reuse-tiles-from must be an existing directory")
+    if args.samples_per_tile < 1:
+        raise ValueError("--samples-per-tile must be >= 1")
+    if args.emit_rl_single_class and not args.task_mix:
+        raise ValueError("--emit-rl-single-class requires the default task-mix pipeline (train 9:1 internal-val partitioning)")
 
 
 def infer_version(root: Path, explicit: str) -> str:
@@ -361,6 +372,33 @@ def make_referring_sample(image_rel: str, phrase: str, box: tuple[int, int, int,
     }
 
 
+def make_rl_single_class_samples(
+    image_rel: str, kept: Sequence[tuple[str, tuple[int, int, int, int]]]
+) -> list[dict]:
+    """RL canonical GT: one row per (tile, single-class prompt) with the FULL box set.
+
+    Unlike emit_tile_samples()/make_sample() this never chunks and never mixes
+    tasks: each answer contains every kept box of that label in the tile, so
+    dense-tile GT survives intact for the RL reward.
+    """
+    by_label: dict[str, list[tuple[int, int, int, int]]] = {}
+    for label, box in kept:
+        by_label.setdefault(label, []).append(box)
+    samples: list[dict] = []
+    for label in sorted(by_label):
+        boxes = by_label[label]
+        samples.append(
+            {
+                "conversations": [
+                    {"from": "human", "value": build_prompt([label])},
+                    {"from": "gpt", "value": build_answer([(label, b) for b in boxes])},
+                ],
+                "image": image_rel,
+            }
+        )
+    return samples
+
+
 def intersecting_labels(objects: Sequence[DotaObject], tile_box: tuple[int, int, int, int]) -> set[str]:
     """Labels of every object whose HBB intersects the tile, before visibility/min-box filters."""
     return {obj.label for obj in objects if intersect_box(obj.hbb, tile_box) is not None}
@@ -477,7 +515,7 @@ def _relative_or_abs(path: Path, cwd: Path) -> str:
     except ValueError:
         return str(path.resolve())
 
-def convert_split(args: argparse.Namespace, version: str, split: str, recipe_entries: dict, partition_of: dict, cwd: Path) -> SplitStats:
+def convert_split(args: argparse.Namespace, version: str, split: str, recipe_entries: dict, partition_of: dict, cwd: Path, rl_single_outputs: dict) -> SplitStats:
     split_dir = args.dota_root / split
     label_dir = choose_label_dir(split_dir, version, args.label_version)
     records = build_records(split_dir, label_dir, args.image_extra_roots)
@@ -513,6 +551,11 @@ def convert_split(args: argparse.Namespace, version: str, split: str, recipe_ent
                 ("train_mix", f"{stem}_train_mix_hbb_{args.tile_size}.jsonl"),
                 ("internal_val_mix", f"{stem}_internal_val_mix_hbb_{args.tile_size}.jsonl"),
             ]
+            if args.emit_rl_single_class:
+                partition_specs += [
+                    ("train_rl_single", f"{stem}_train_rl_single_hbb_{args.tile_size}.jsonl"),
+                    ("internal_val_rl_single", f"{stem}_internal_val_rl_single_hbb_{args.tile_size}.jsonl"),
+                ]
         else:
             partition_specs = [
                 ("test_t1", f"{stem}_test_t1_hbb_{args.tile_size}.jsonl"),
@@ -526,6 +569,10 @@ def convert_split(args: argparse.Namespace, version: str, split: str, recipe_ent
             return bool(records)
         if partition == "internal_val_mix":
             return bool(internal_val_ids)
+        if partition == "internal_val_rl_single":
+            return bool(internal_val_ids)
+        if partition == "train_rl_single":
+            return len(records) > len(internal_val_ids)
         return len(records) > len(internal_val_ids)
 
     jsonl_fhs: dict[str, object] = {}
@@ -634,6 +681,22 @@ def convert_split(args: argparse.Namespace, version: str, split: str, recipe_ent
                             stats.kept_objects += n_kept
                             stats.class_counts.update(cls_counts)
                             stats.task_counts.update(task_counts)
+                    if args.emit_rl_single_class and split == "train" and kept:
+                        rl_partition = (
+                            "internal_val_rl_single"
+                            if record.image_id in internal_val_ids
+                            else "train_rl_single"
+                        )
+                        rl_fh = jsonl_fhs.get(rl_partition)
+                        rl_rows = make_rl_single_class_samples(tile_rel, kept)
+                        if not args.dry_run and rl_fh is not None:
+                            for rl_row in rl_rows:
+                                rl_fh.write(json.dumps(rl_row, ensure_ascii=False) + "\n")
+                        stats.rl_single_samples_written += len(rl_rows)
+                        for rl_row in rl_rows:
+                            n_boxes = rl_row["conversations"][1]["value"].count("<ref>")
+                            stats.rl_single_max_boxes = max(stats.rl_single_max_boxes, n_boxes)
+                        stats.rl_single_class_counts.update(label for label, _ in kept)
             image.close()
     finally:
         for fh in jsonl_fhs.values():
@@ -647,6 +710,16 @@ def convert_split(args: argparse.Namespace, version: str, split: str, recipe_ent
             if annotation_path is None:
                 continue
             dataset_key = f"{base_key}_{partition}_hbb_{args.tile_size}"
+            if partition.endswith("_rl_single"):
+                rl_single_outputs["annotations"][partition] = _relative_or_abs(annotation_path, cwd)
+                if partition == "train_rl_single":
+                    rl_single_outputs["recipe"][dataset_key] = {
+                        "annotation": _relative_or_abs(annotation_path, cwd),
+                        "root": root_recipe,
+                        "repeat_time": args.repeat_time,
+                        "data_augment": args.data_augment,
+                    }
+                continue
             recipe_entries[dataset_key] = {
                 "annotation": _relative_or_abs(annotation_path, cwd),
                 "root": root_recipe,
@@ -657,7 +730,7 @@ def convert_split(args: argparse.Namespace, version: str, split: str, recipe_ent
     return stats
 
 
-def write_recipe_and_metadata(args: argparse.Namespace, version: str, recipe_entries: dict, partition_of: dict, stats: list[SplitStats]) -> None:
+def write_recipe_and_metadata(args: argparse.Namespace, version: str, recipe_entries: dict, partition_of: dict, stats: list[SplitStats], rl_single_outputs: dict) -> None:
     if args.dry_run:
         return
     recipes_dir = args.output_root / "recipes"
@@ -689,6 +762,8 @@ def write_recipe_and_metadata(args: argparse.Namespace, version: str, recipe_ent
     else:
         write_recipe(f"{recipe_name}.json", dict(recipe_entries))
         write_recipe(f"{recipe_name}_train_only.json", {key: value for key, value in recipe_entries.items() if "_train_" in key})
+    if args.emit_rl_single_class:
+        write_recipe(f"{recipe_name}_rl_single.json", dict(rl_single_outputs["recipe"]))
 
     metadata = {
         "dota_root": str(args.dota_root),
@@ -706,6 +781,8 @@ def write_recipe_and_metadata(args: argparse.Namespace, version: str, recipe_ent
         "task_mix_weights": dict(TASK_MIX_WEIGHTS),
         "reuse_tiles_from": str(args.reuse_tiles_from) if args.reuse_tiles_from is not None else None,
         "t4_scene_scale_skip": sorted(T4_SCENE_SCALE_SKIP),
+        "emit_rl_single_class": args.emit_rl_single_class,
+        "rl_single_annotations": dict(rl_single_outputs["annotations"]),
         "splits": [s.to_dict() for s in stats],
     }
     metadata_path = metadata_dir / f"{recipe_name}_stats.json"
@@ -718,12 +795,13 @@ def main() -> None:
     cwd = Path.cwd().resolve()
     recipe_entries: dict = {}
     partition_of: dict = {}
+    rl_single_outputs: dict = {"recipe": {}, "annotations": {}}
     all_stats: list[SplitStats] = []
     for split in args.splits:
-        stats = convert_split(args, version, split, recipe_entries, partition_of, cwd)
+        stats = convert_split(args, version, split, recipe_entries, partition_of, cwd, rl_single_outputs)
         all_stats.append(stats)
         print(json.dumps(stats.to_dict(), ensure_ascii=False), flush=True)
-    write_recipe_and_metadata(args, version, recipe_entries, partition_of, all_stats)
+    write_recipe_and_metadata(args, version, recipe_entries, partition_of, all_stats, rl_single_outputs)
 
 
 if __name__ == "__main__":
