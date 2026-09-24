@@ -96,6 +96,23 @@ resume 后总指标持续回升，d1500（全局 1500）AP50/AP **越过基线**
 
 **Baseline canonical hybrid**（geom100k，385 unique dense 图，15 类穷举，max_new_tokens 2048）：all micro P/R/F1 = 0.553/0.379/**0.450**；small R=**0.362**、small F1=0.446；mean preds 25.6/图；label mismatch 仅 74。tied-score AP50 0.255 / smallAP50 0.132（仅诊断）。go/no-go 以 fixed_iou_05 为准。
 
+## Pilot 250-step 终判（2026-09-25，`work_dirs/rl_grpo_hbb_dense_v2_pilot`）
+
+设置：LR 5e-7、G16、KL β=0.02、loss 分母 512、min-reward-std 0.02、save 50；数据 RL-single（smallGT≥10 的 1089 样本池）；train n_skip=3/250。每个 checkpoint 由 watcher 自动跑 canonical hybrid eval 对比 baseline（regression→自动停训，未触发）。
+
+| canonical hybrid（385 unique 图） | baseline | step50 | step100 | step150 | step200 | step250 |
+|---|---:|---:|---:|---:|---:|---:|
+| all micro F1 | 0.4495 | 0.4460 | 0.4517 | 0.4560 | **0.4577** | 0.4484 |
+| small recall | 0.3622 | 0.3574 | 0.3637 | 0.3668 | **0.3734** | 0.3673 |
+| small F1 | 0.4456 | 0.4429 | 0.4468 | 0.4458 | **0.4495** | 0.4428 |
+| mean preds/图 | 25.6 | 25.4 | 25.7 | 26.5 | 27.0 | 26.8 |
+
+**Slow 诊断**（同 385 图、NTP 解码；只诊断 decoder mismatch，不参与放行）：baseline all F1 0.4902 / small R 0.3986 → step200 all F1 **0.5025** / small R **0.4226**。slow 下改善更大（small R +0.0240 vs hybrid +0.0112），方向一致——PBD hybrid 解码不是瓶颈。
+
+**Go/no-go（既定规则，step250 final-check）**：FAIL——small R 0.3673 ✓（+0.0051）、all F1 0.4484 ✓、mean preds ✓，但 **small F1 0.4428 < baseline 0.4456 ✗**。→ **不扩展 1000 步**。step200 用同一 final 规则为 **PASS**（4/4）。
+
+**结论**：修复后的闭环（完整单类 GT + 一对一 small-recall 奖励 + reference-KL）首次实现 small recall 与 overall F1 同向改善（step200：hybrid small R +0.0112、all F1 +0.0082；slow small R +0.0240），且无少发框/少预警等 reward hacking 迹象（mean preds 上升、parse fail 正常）。150→200 单调改善、250 末回落属训练后期退化；**最佳产出 checkpoint = step200**。扩步决策需回到 reward gate 重新验证（不通过增加步数补救）。
+
 ## Follow-ups（未做）
 
 - 修奖励/协议后再重启 RL：单类句式对齐 eval、按 GT 上限放行框数或去掉 20 框硬门、面积加权 `r_main`
