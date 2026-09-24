@@ -75,6 +75,27 @@ resume 后总指标持续回升，d1500（全局 1500）AP50/AP **越过基线**
 - 止步时训练指标：parse_ok 0.5–1.0 振荡、train reward 仍高位——与"奖励被吃分"终判一致，无新信息。
 - v2 闭环（RL-single 数据 / reward v3 / 组内 gate / reference-KL GRPO / canonical eval）已落地，见下文 v2 各节。
 
+## v2 闭环结果（2026-09-24）
+
+**数据**：`data/dota_v1_hbb_448_rl_v2`（converter `--emit-rl-single-class`，复用 mix_v1 tiles）：train_rl_single **19154 行** + internal_val 2196 行，(image,prompt) 唯一、单类、每行完整 GT；max GT=169（≤256 上限），最长 answer 1188 token（≤2048）。recipe `_rl_single.json` 只含 train partition。
+
+**奖励 v3**（`reward.py`）：一对一匈牙利匹配（label-aware IoU 最大化）+ small recall 加权，输出上限 20→256，无 NMS（重复框=FP）。selftest 全过：30/30=1.0、20/30 全 small≈0.733 严格小于完整输出、重复框/错类/截断严格降分。
+
+**Freeze gate v2**（512 samples × G16，双卡 8192 rollouts，geom100k 冻结策略）——**四门全过**：
+
+| 门 | 值 | 阈值 |
+|---|---|---|
+| pairwise concordance（组内宏平均） | **0.918** | ≥0.70 |
+| median group Spearman | **0.937** | ≥0.60 |
+| signal fraction（std≥0.02） | **0.988**（506/512 组） | ≥0.70 |
+| timing ratio | **0.0002** | ≤0.25 |
+
+诊断：全局 reward↔anchor Spearman **0.9897**（v2.1 门禁 ρ 仅 0.704）；parse_fail 14.1%（超密 tile 撞 2048 token 截断，reward −1 正确垫底）；mean n_pred 16.4；mean hard small recall 0.463。v3 奖励在组内排序上与评测锚点几乎完全一致。
+
+**Smoke/resume**：fresh 首组 policy/reference token logprob diff **0.00e+00**（修复 fp32/bf16 dtype 陷阱后）；KL 有限非负；checkpoint-2 → resume 至 step 4：optimizer/order/cursor 连续无重放；checkpoint 可直接 `LocateAnythingWorker.detect()`，state 中无 `.reference.` key。
+
+**Baseline canonical hybrid**（geom100k，385 unique dense 图，15 类穷举，max_new_tokens 2048）：all micro P/R/F1 = 0.553/0.379/**0.450**；small R=**0.362**、small F1=0.446；mean preds 25.6/图；label mismatch 仅 74。tied-score AP50 0.255 / smallAP50 0.132（仅诊断）。go/no-go 以 fixed_iou_05 为准。
+
 ## Follow-ups（未做）
 
 - 修奖励/协议后再重启 RL：单类句式对齐 eval、按 GT 上限放行框数或去掉 20 框硬门、面积加权 `r_main`
