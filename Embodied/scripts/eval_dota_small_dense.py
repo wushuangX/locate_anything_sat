@@ -52,6 +52,8 @@ def parse_args():
     p.add_argument("--num-samples", type=int, default=0,
                    help="0 = 全部 canonical dense 图像（排序固定，不抽样）")
     p.add_argument("--min-small-gt", type=int, default=10)
+    p.add_argument("--max-small-gt", type=int, default=0,
+                   help=">0 时限制 pool 的 smallGT 上界（稀疏子集抽样用；0=不设上界）")
     p.add_argument("--seeds", default="42",
                    help="抽样模式用；canonical(num-samples 0) 忽略 seed")
     p.add_argument("--max-new-tokens", type=int, default=2048)
@@ -413,11 +415,13 @@ def main() -> int:
     all_samples = emap.load_jsonl(Path(args.data_root) / args.annotation)
     canonical = merge_t1_chunks(all_samples)
     n_dup_rows = sum(r["n_rows_merged"] for r in canonical)
-    pool = [r for r in canonical if canonical_small_gt(r) >= args.min_small_gt]
+    pool = [r for r in canonical if canonical_small_gt(r) >= args.min_small_gt
+            and (args.max_small_gt <= 0 or canonical_small_gt(r) <= args.max_small_gt)]
     print(
         f"[pool] {len(all_samples)} raw rows -> {len(canonical)} unique images "
-        f"({n_dup_rows} merged chunk rows) -> {len(pool)} dense images with "
-        f"smallGT>={args.min_small_gt} (computed AFTER merge)",
+        f"({n_dup_rows} merged chunk rows) -> {len(pool)} pool images with "
+        f"smallGT in [{args.min_small_gt}, {args.max_small_gt if args.max_small_gt > 0 else 'inf'}] "
+        f"(computed AFTER merge)",
         flush=True,
     )
     if not pool:
