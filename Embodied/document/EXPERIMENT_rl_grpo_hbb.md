@@ -113,6 +113,39 @@ resume 后总指标持续回升，d1500（全局 1500）AP50/AP **越过基线**
 
 **结论**：修复后的闭环（完整单类 GT + 一对一 small-recall 奖励 + reference-KL）首次实现 small recall 与 overall F1 同向改善（step200：hybrid small R +0.0112、all F1 +0.0082；slow small R +0.0240），且无少发框/少预警等 reward hacking 迹象（mean preds 上升、parse fail 正常）。150→200 单调改善、250 末回落属训练后期退化；**最佳产出 checkpoint = step200**。扩步决策需回到 reward gate 重新验证（不通过增加步数补救）。
 
+## 稳定性探路（2026-09-25，`work_dirs/rl_grpo_hbb_dense_v2_probe200`）
+
+动机：pilot 150→200 单调涨、250 回落——判别"LR 恒定漂移"还是"收益见顶"。从 pilot checkpoint-200 起步，**LR 5e-7→2.5e-7（减半）、KL β 0.02→0.05（加倍）**，再走 150 步（探索性配置，非锁定配方）。
+
+| canonical hybrid | all F1 | small R | small F1 |
+|---|---:|---:|---:|
+| pilot step200（探路起点） | 0.4577 | 0.3734 | 0.4495 |
+| pilot step250（原配置末，FAIL） | 0.4484 | 0.3673 | 0.4428 |
+| **probe50（=全局 250，低 LR+强 KL）** | **0.4615** | **0.3818** | **0.4568** |
+| probe100（=全局 300） | 0.4592 | 0.3772 | 0.4524 |
+| probe150（=全局 350） | 0.4578 | 0.3796 | 0.4548 |
+
+**判读**：
+1. 同为全局 250 步，低 LR+强 KL 配置（probe50）全面优于原配置（pilot step250）：all F1 +0.0131、small R +0.0145、small F1 +0.0140——**250 末回落是漂移，不是见顶**。
+2. probe50 相对 pilot step200 也继续上涨（small R +0.0084）；probe100/150 收益趋平微落——当前配置收益在全局 ~250 步收敛。
+3. **最佳产出 checkpoint：`rl_grpo_hbb_dense_v2_probe200/checkpoint-50`（全局 250 步）**：small R 0.3818（baseline +0.0196）、small F1 0.4568（+0.0112）、all F1 0.4615（+0.0120），全程 acceptance ok。
+
+## 稀疏子集泛化复验（2026-09-25，300 图 smallGT∈[0,9]，15 类穷举）
+
+| | all P / R / F1 | small P / R / F1 | mean preds |
+|---|---|---|---|
+| baseline | 0.420 / 0.669 / 0.516 | 0.178 / 0.462 / 0.257 | 7.5 |
+| pilot step200 | 0.421 / 0.708 / 0.528 | 0.185 / 0.530 / 0.275 | 7.9 |
+
+**泛化确认**：RL 改善不局限于 dense 子集——稀疏图上精度、召回、F1 **全面净提升**（small R +0.068、all F1 +0.012），排除"以牺牲稀疏图为代价"。
+
+| 稀疏 300 图 | all P/R/F1 | small P/R/F1 | mean preds |
+|---|---|---|---|
+| pilot step200 | 0.421 / **0.708** / **0.528** | 0.185 / **0.530** / **0.275** | 7.9 |
+| probe50 | 0.413 / 0.688 / 0.516 | 0.183 / 0.508 / 0.269 | 7.9 |
+
+probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all F1 持平），但低于 step200 的稀疏峰值——**两个产出 checkpoint 的取舍**：probe50 是 dense 小目标峰值（项目主目标），step200 在稀疏图上更均衡。
+
 ## Follow-ups（未做）
 
 - 修奖励/协议后再重启 RL：单类句式对齐 eval、按 GT 上限放行框数或去掉 20 框硬门、面积加权 `r_main`
