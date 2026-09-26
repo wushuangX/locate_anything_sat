@@ -54,12 +54,14 @@
 
 ## RL（GRPO）实验
 
-基于 #4 最终权重的 on-policy GRPO（单卡、无 KL）。详见 [EXPERIMENT_rl_grpo_hbb.md](EXPERIMENT_rl_grpo_hbb.md)。
+基于 #4 最终权重的 on-policy GRPO。A/B 为 v2.1 奖励（单卡、无 KL，已废弃）；v2 起改用完整单类 GT 数据 + 一对一 small-recall 奖励 + reference-KL（详见 [EXPERIMENT_rl_grpo_hbb.md](EXPERIMENT_rl_grpo_hbb.md)）。
 
 | run | 目录 | 数据 | G | 步数 | 结论 |
 |---|---|---|---:|---:|---|
 | A | `work_dirs/rl_grpo_hbb_100k/` | 全池 15542 tile | 8 | 500 | 无信号：奖励饱和，skip 16.8%，密集团指标与 #4 持平 |
 | B | `work_dirs/rl_grpo_hbb_dense_g16_2k5/` | smallGT≥10 的 712 tile | 16 | 1000（原计划 2500，watcher 终止） | **负迁移**：train reward↑ 但密集团 small AP50 0.275→0.197（配对 3/3 负）；奖励/协议错位，ckpt 作废 |
+| v2 pilot | `work_dirs/rl_grpo_hbb_dense_v2_pilot/` | RL-single 完整单类 GT，smallGT≥10 的 1089 样本 | 16 | 250 | **正迁移**：canonical dense-385 small R 0.3622→0.3734（step200）、all F1 +0.0082；step250 final-check FAIL（small F1 回落），不扩 1000 步 |
+| v2 probe | `work_dirs/rl_grpo_hbb_dense_v2_probe200/` | 同上，从 pilot ckpt-200 起 LR 2.5e-7 + KL 0.05 | 16 | 150 | **漂移确认**：probe50（全局 250）all F1 0.4615 / small R 0.3818 为新峰值；收益在全局 ~250 步收敛。最佳产出 `probe200/checkpoint-50` |
 
 ## 新 run 怎么记
 
