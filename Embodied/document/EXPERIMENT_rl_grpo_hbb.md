@@ -168,7 +168,8 @@ probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all
 ## v2 双卡扩池对照（2026-09-28，进行中；尚无评测结论）
 
 - 前提修复：`grpo_loop.py` 在复制 reference 权重**之前**对齐 adapter dtype，逐张量核对精确相等；fresh run 首组 log-prob 差超过 `1e-3` 直接中止。旧 pilot checkpoint-200 上 GPU 前向差 **0.00e+00**；geom100k 扩池两步 smoke 首组差 **0.00e+00**，loss 有限并成功存盘。checkpoint-2 恢复至 step3，optimizer/order/cursor 正确延续；恢复后的 policy/reference 已不同，首组差 **0.265** 不应触发 fresh 检查。
-- 双卡 gate 于 2026-09-28 21:15（UTC+8）启动：geom100k 冻结策略，RL-single smallGT≥2 **3851 行 / 15 类**，seed43、512 个样本 × G16、GPU0/1 各一半；输出 `work_dirs/rl_v2_pair_seed43/gate_small2/`，日志 `gate_gpu{0,1}.log`。只有两个 shard 完成、`summary_gate.json` 四门通过且确有 512 组 / 8192 轨迹才允许训练；目前**尚未声称 gate 通过**。
+- 双卡 gate 于 2026-09-28 21:15（UTC+8）启动：geom100k 冻结策略，RL-single smallGT≥2 **3851 行 / 15 类**，seed43、512 个样本 × G16、GPU0/1 各一半；输出 `work_dirs/rl_v2_pair_seed43/gate_small2/`，日志 `gate_gpu{0,1}.log`。只有两个 shard 完成、`summary_gate.json` 四门通过且确有 512 组 / 8192 轨迹才允许训练。23:42 因用户准备重启服务器，已停止两个 gate 子进程、编排器退出并 `sync`；当时**尚未通过 gate、训练未启动**。
+- 暂停点：shard0 **2563/4096**、shard1 **2387/4096**；全部 JSONL 行均完整可解析、`(sample_id,k)` 唯一，且与 seed43 抽样 / 分片匹配。重启后在 `Embodied/` 工作根执行 `RESUME_GATE=1 nohup bash shell/rl-grpo-hbb-v2-pair.sh >> work_dirs/rl_v2_pair_seed43/orchestrator.log 2>&1 < /dev/null &`；launcher 保留旧日志，`freeze_check.py` 按 `(sample_id,k)` 跳过已有结果。不要不设 `RESUME_GATE` 重跑编排器；如 GPU 尚不可新建进程，保留文件待 GPU 恢复再继续。
 - 通过后由 `shell/rl-grpo-hbb-v2-pair.sh` 自动并发启动 GPU0 `control_small10`（1089 行 / 8 类）与 GPU1 `expanded_small2`（3851 行 / 15 类）：同从 geom100k 权重、seed43、G16、LR 5e-7、KL 0.02、200 步、每 50 步存档。唯一预设实验因素是训练池过滤阈值；训练输入顺序随池变化，不应解释为逐 minibatch 配对。总控日志：`work_dirs/rl_v2_pair_seed43/orchestrator.log`。
 - 待评估：每个 checkpoint 在同一 canonical dense-385、固定 sparse-300 图像上用 hybrid/15 类协议比 micro F1、小目标召回/F1、预测框数/误报、类别错误；和 geom100k 及既有 pilot seed42 对照。未复验前不称扩池效果或多 seed 稳定性。
 

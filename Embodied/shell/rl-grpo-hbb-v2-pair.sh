@@ -14,19 +14,30 @@ model_path=work_dirs/dota_geom_lora_lda_2gpu_4k_100k_run1
 ann=data/dota_v1_hbb_448_rl_v2/annotations/DOTA-v1.0_train_rl_single_hbb_448.jsonl
 data_root=data/dota_v1_hbb_448_rl_v2
 mkdir -p "$run_root"
-if [[ -e "$gate_dir" || -e "$run_root/control_small10" || -e "$run_root/expanded_small2" ]]; then
-  echo "[pair] Existing gate or training output under $run_root; refusing to mix runs" >&2
+if [[ -e "$run_root/control_small10" || -e "$run_root/expanded_small2" ]]; then
+  echo "[pair] Training output already exists under $run_root; refusing to mix runs" >&2
   exit 1
 fi
-mkdir "$gate_dir"
-
-echo "[pair] $(date -Is) gate: 512 samples x G16, smallGT>=2, two 4090 shards"
+if [[ -e "$gate_dir" ]]; then
+  if [[ "${RESUME_GATE:-0}" != 1 || ! -d "$gate_dir" || -f "$gate_dir/summary_gate.json" ]]; then
+    echo "[pair] Existing gate is not an incomplete resume target; refusing to overwrite it" >&2
+    exit 1
+  fi
+  echo "[pair] $(date -Is) resuming gate from completed (sample_id,k) rows in $gate_dir"
+else
+  if [[ "${RESUME_GATE:-0}" == 1 ]]; then
+    echo "[pair] Missing gate output under $gate_dir; cannot resume" >&2
+    exit 1
+  fi
+  mkdir "$gate_dir"
+  echo "[pair] $(date -Is) gate: 512 samples x G16, smallGT>=2, two 4090 shards"
+fi
 for gpu in 0 1; do
   CUDA_VISIBLE_DEVICES="$gpu" python scripts/rl/freeze_check.py \
     --stage gate --model-path "$model_path" --ann "$ann" --data-root "$data_root" \
     --out-dir "$gate_dir" --seed 43 --min-small-gt 2 \
     --samples 512 --n 16 --shard "$gpu" --num-shards 2 \
-    > "$run_root/gate_gpu${gpu}.log" 2>&1 &
+    >> "$run_root/gate_gpu${gpu}.log" 2>&1 &
   gate_pids[$gpu]=$!
 done
 

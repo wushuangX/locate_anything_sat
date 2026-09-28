@@ -421,6 +421,7 @@ ______________________________________________________________________
 | 同上 | `--use_lda` | None | 残差 Local Detail Adapter（MoonViT encoder 输出与 patch merge 之间，`F' = F + γ·ΔF`，γ 初始 0 故首前向为恒等）；`'true'`/`'false'`，未设置沿用 checkpoint/config（基座为关）；序列化进 checkpoint `config.json` 的 `vision_config`；开启时即使 `freeze_backbone` 也会解冻 LDA |
 | 同上 | `--lda_bottleneck_dim` | 128 | LDA 瓶颈通道数（仅 `--use_lda true` 生效） |
 | `scripts/rl/grpo_loop.py` | `--seed` / `shell/rl-grpo-hbb-dense.sh` `SEED` | 42 | GRPO shuffle 与 Torch/CUDA RNG；双卡独立作业需显式传入，同组对照使用相同 seed |
+| `shell/rl-grpo-hbb-v2-pair.sh` | `RESUME_GATE` | 0 | 设为 `1` 时从已有且未产生 `summary_gate.json` 的 gate 目录续跑 `(sample_id,k)`；不重放已落盘采样 |
 | Recipe JSON | `repeat_time` | 1.0 | 采样权重（≥1 重复，<1 下采样） |
 | Recipe JSON | `data_augment` | false | resize 多尺度增强（小目标推荐开） |
 | Recipe JSON | `rotate` / `hflip` | 0 / false | 加载时对图像做 90° 旋转/水平翻转（配 `augment_locany_jsonl.py` 离线 JSONL；与 `visual_prompt` 互斥） |
