@@ -156,7 +156,7 @@ probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all
 | step200 | 8728 | 7126（82%） | 1602（18%） | 80% |
 | probe50 | 8636 | **7000（81%）** | 1636（19%） | 80% |
 
-**判读**：剩余错误以**纯漏检**为绝对主模式（81–82%），坐标定位精度只占 ~19%——当前协议下的主要矛盾不是坐标量化，而是模型对最难小目标不触发。RL 三档均只小幅削减漏检（−4%），误差结构不变，与"训练侧收益收敛"互为印证。
+**判读边界**：按“无同类 IoU≥0.1 预测”定义，剩余 FN 的 81–82% 属于漏检类；这是启发式分类（可能混有错类/重复匹配），不能单凭该比例断言坐标量化不是瓶颈、切片一定有效，或 RL 收益已经收敛。
 
 ## 下一步建议（2026-09-25，基于上述诊断）
 
@@ -165,8 +165,14 @@ probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all
 3. 产出固化：`probe200/checkpoint-50`（dense 峰值）与 `pilot/checkpoint-200`（稀疏均衡）做硬链接快照防滚动清理。
 4. 暂缓：全量 5102 图 mAP（~40h GPU，dense+sparse 双证据已够方向性结论）、跨数据集（AI-TOD/VisDrone）迁移。
 
+## v2 双卡扩池对照（2026-09-28，进行中；尚无评测结论）
+
+- 前提修复：`grpo_loop.py` 在复制 reference 权重**之前**对齐 adapter dtype，逐张量核对精确相等；fresh run 首组 log-prob 差超过 `1e-3` 直接中止。旧 pilot checkpoint-200 上 GPU 前向差 **0.00e+00**；geom100k 扩池两步 smoke 首组差 **0.00e+00**，loss 有限并成功存盘。checkpoint-2 恢复至 step3，optimizer/order/cursor 正确延续；恢复后的 policy/reference 已不同，首组差 **0.265** 不应触发 fresh 检查。
+- 双卡 gate 于 2026-09-28 21:15（UTC+8）启动：geom100k 冻结策略，RL-single smallGT≥2 **3851 行 / 15 类**，seed43、512 个样本 × G16、GPU0/1 各一半；输出 `work_dirs/rl_v2_pair_seed43/gate_small2/`，日志 `gate_gpu{0,1}.log`。只有两个 shard 完成、`summary_gate.json` 四门通过且确有 512 组 / 8192 轨迹才允许训练；目前**尚未声称 gate 通过**。
+- 通过后由 `shell/rl-grpo-hbb-v2-pair.sh` 自动并发启动 GPU0 `control_small10`（1089 行 / 8 类）与 GPU1 `expanded_small2`（3851 行 / 15 类）：同从 geom100k 权重、seed43、G16、LR 5e-7、KL 0.02、200 步、每 50 步存档。唯一预设实验因素是训练池过滤阈值；训练输入顺序随池变化，不应解释为逐 minibatch 配对。总控日志：`work_dirs/rl_v2_pair_seed43/orchestrator.log`。
+- 待评估：每个 checkpoint 在同一 canonical dense-385、固定 sparse-300 图像上用 hybrid/15 类协议比 micro F1、小目标召回/F1、预测框数/误报、类别错误；和 geom100k 及既有 pilot seed42 对照。未复验前不称扩池效果或多 seed 稳定性。
+
 ## Follow-ups（未做）
 
-- 修奖励/协议后再重启 RL：单类句式对齐 eval、按 GT 上限放行框数或去掉 20 框硬门、面积加权 `r_main`
-- 密集团全量 517 评测（~2.5 h/ckpt）作为最终判决协议
+- 双卡对照完成后核对 gate、训练轨迹和 canonical dense/sparse 验收；指标尚未产出。
 - Run B ckpt 留存 `work_dirs/rl_grpo_hbb_dense_g16_2k5/snapshots/checkpoint-{250,500,750,1000}` 作反例
