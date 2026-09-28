@@ -60,8 +60,8 @@
 |---|---|---|---:|---:|---|
 | A | `work_dirs/rl_grpo_hbb_100k/` | 全池 15542 tile | 8 | 500 | 无信号：奖励饱和，skip 16.8%，密集团指标与 #4 持平 |
 | B | `work_dirs/rl_grpo_hbb_dense_g16_2k5/` | smallGT≥10 的 712 tile | 16 | 1000（原计划 2500，watcher 终止） | **负迁移**：train reward↑ 但密集团 small AP50 0.275→0.197（配对 3/3 负）；奖励/协议错位，ckpt 作废 |
-| v2 pilot | `work_dirs/rl_grpo_hbb_dense_v2_pilot/` | RL-single 完整单类 GT，smallGT≥10 的 1089 样本 | 16 | 250 | **正迁移**：canonical dense-385 small R 0.3622→0.3734（step200）、all F1 +0.0082；step250 final-check FAIL（small F1 回落），不扩 1000 步 |
-| v2 probe | `work_dirs/rl_grpo_hbb_dense_v2_probe200/` | 同上，从 pilot ckpt-200 起 LR 2.5e-7 + KL 0.05 | 16 | 150 | **漂移确认**：probe50（全局 250）all F1 0.4615 / small R 0.3818 为新峰值；收益在全局 ~250 步收敛。最佳产出 `probe200/checkpoint-50` |
+| v2 pilot | `work_dirs/rl_grpo_hbb_dense_v2_pilot/` | RL-single 完整单类 GT，smallGT≥10 的 1089 样本 | 16 | 250 | **单次训练正向信号**：dense-385 step200 small R 0.3622→0.3734、all F1 +0.0082；step250 small F1 回落、final-check FAIL。尚无训练 seed 复验 |
+| v2 probe | `work_dirs/rl_grpo_hbb_dense_v2_probe200/` | pilot step200 权重 warm-start，重置优化器/数据顺序/reference，LR 2.5e-7 + KL 0.05 | 16 | 150 | probe50 dense-385 all F1 0.4615 / small R 0.3818 为**探索性峰值**；首组 policy/reference log-prob 差 0.453，不能据此确认漂移原因或收敛步数 |
 
 ## 新 run 怎么记
 

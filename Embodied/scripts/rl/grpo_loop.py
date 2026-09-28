@@ -194,18 +194,25 @@ def _prepare_policy(model) -> tuple[list, str]:
     ref_cfg = copy.deepcopy(peft_model.peft_config[policy_name])
     peft_model.add_adapter(REFERENCE_ADAPTER, ref_cfg)
     ref_state = get_peft_model_state_dict(peft_model, adapter_name=policy_name)
-    set_peft_model_state_dict(peft_model, ref_state, adapter_name=REFERENCE_ADAPTER)
-    # add_adapter 建出的新 adapter 继承 base dtype（bf16），而 checkpoint 的 policy
-    # adapter 常为 fp32；dtype 不一致会让 ref/pol 前向舍入不同（fresh run KL≠0）。
-    # torch.equal 跨 dtype 按值比较查不出这种差异，必须显式统一到 policy dtype。
+    # add_adapter 的新 adapter 继承 base dtype（可能是 bf16），而 checkpoint 的
+    # policy adapter 常为 fp32。先对齐 dtype 再复制，避免 fp32→bf16→fp32 舍入。
     pol_named = {n: p for n, p in model.named_parameters() if "lora_" in n}
     for n, p in pol_named.items():
         if f".{REFERENCE_ADAPTER}." not in n:
             continue
         twin = n.replace(f".{REFERENCE_ADAPTER}.", f".{policy_name}.")
         src = pol_named.get(twin)
-        if src is not None and p.dtype != src.dtype:
+        if src is None:
+            raise RuntimeError(f"missing policy tensor for reference {n}")
+        if p.dtype != src.dtype:
             p.data = p.data.to(src.dtype)
+    set_peft_model_state_dict(peft_model, ref_state, adapter_name=REFERENCE_ADAPTER)
+    for n, p in pol_named.items():
+        if f".{REFERENCE_ADAPTER}." not in n:
+            continue
+        src = pol_named[n.replace(f".{REFERENCE_ADAPTER}.", f".{policy_name}.")]
+        if p.dtype != src.dtype or not torch.equal(p, src):
+            raise RuntimeError(f"reference differs from policy immediately after copy: {n}")
     peft_model.set_adapter(policy_name)
 
     # requires-grad：只有 policy LoRA 可训练；reference / vision / MLP / base 全冻结
@@ -513,8 +520,10 @@ def main(argv=None) -> int:
                 )
                 if not max_logp_diff_printed and ref_logp.numel() and pol_logp.numel():
                     d = float((pol_logp - ref_logp).abs().max())
-                    print(f"[grpo] first group max|pol-ref| token logp diff = {d:.2e} "
-                          f"(fresh run 必须≈0：reference 为 policy 拷贝)", flush=True)
+                    print(f"[grpo] first group max|pol-ref| token logp diff = {d:.2e}",
+                          flush=True)
+                    if resume_state is None and (not math.isfinite(d) or d > 1e-3):
+                        raise RuntimeError(f"fresh reference must match policy before update (diff={d:.2e})")
                     max_logp_diff_printed = True
                 li, kl_i = sequence_policy_loss(
                     pol_logp, ref_logp, float(a), args.kl_beta, args.loss_token_normalizer

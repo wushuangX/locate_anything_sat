@@ -115,7 +115,7 @@ resume 后总指标持续回升，d1500（全局 1500）AP50/AP **越过基线**
 
 ## 稳定性探路（2026-09-25，`work_dirs/rl_grpo_hbb_dense_v2_probe200`）
 
-动机：pilot 150→200 单调涨、250 回落——判别"LR 恒定漂移"还是"收益见顶"。从 pilot checkpoint-200 起步，**LR 5e-7→2.5e-7（减半）、KL β 0.02→0.05（加倍）**，再走 150 步（探索性配置，非锁定配方）。
+动机：探索 pilot step200 后是否还有收益。从该 checkpoint 权重 warm-start，**LR 5e-7→2.5e-7、KL β 0.02→0.05**，再走 150 步；优化器、数据顺序、RNG 和 reference 重新初始化，不是 `--resume-from-checkpoint` 的连续训练轨迹。
 
 | canonical hybrid | all F1 | small R | small F1 |
 |---|---:|---:|---:|
@@ -125,10 +125,10 @@ resume 后总指标持续回升，d1500（全局 1500）AP50/AP **越过基线**
 | probe100（=全局 300） | 0.4592 | 0.3772 | 0.4524 |
 | probe150（=全局 350） | 0.4578 | 0.3796 | 0.4548 |
 
-**判读**：
-1. 同为全局 250 步，低 LR+强 KL 配置（probe50）全面优于原配置（pilot step250）：all F1 +0.0131、small R +0.0145、small F1 +0.0140——**250 末回落是漂移，不是见顶**。
-2. probe50 相对 pilot step200 也继续上涨（small R +0.0084）；probe100/150 收益趋平微落——当前配置收益在全局 ~250 步收敛。
-3. **最佳产出 checkpoint：`rl_grpo_hbb_dense_v2_probe200/checkpoint-50`（全局 250 步）**：small R 0.3818（baseline +0.0196）、small F1 0.4568（+0.0112）、all F1 0.4615（+0.0120），全程 acceptance ok。
+**判读（2026-09-28 更正）**：
+1. probe50 在 dense-385 上是最高观测点，但与 pilot step250 相比同时改变了 LR、KL、优化器、样本顺序和 reference；“全局 250”仅表示权重经历 200+50 次更新，不能确认 pilot 末回落的原因或收益在 250 步收敛。
+2. probe 首组 `max|pol-ref| token logp diff=4.53e-01`，pilot 为 0；旧代码先把 fp32 policy 权重拷进可能为 bf16 的 reference，再对齐 dtype，已发生的舍入无法恢复。probe 权重的评测数字成立，但“强 KL 相对精确 policy 副本”的因果解释不成立。后续训练已改为先对齐 dtype、再复制，并对 fresh reference 不等价硬失败。
+3. pilot step200 是较可信的默认候选（同样只有单 seed）；probe50 保留为密集集探索性峰值。稀疏 300 图上 pilot step200 更好；两者差异需独立训练 seed 与未用于挑选 checkpoint 的验证来确认。
 
 ## 稀疏子集泛化复验（2026-09-25，300 图 smallGT∈[0,9]，15 类穷举）
 
@@ -137,7 +137,7 @@ resume 后总指标持续回升，d1500（全局 1500）AP50/AP **越过基线**
 | baseline | 0.420 / 0.669 / 0.516 | 0.178 / 0.462 / 0.257 | 7.5 |
 | pilot step200 | 0.421 / 0.708 / 0.528 | 0.185 / 0.530 / 0.275 | 7.9 |
 
-**泛化确认**：RL 改善不局限于 dense 子集——稀疏图上精度、召回、F1 **全面净提升**（small R +0.068、all F1 +0.012），排除"以牺牲稀疏图为代价"。
+**方向性信号**：单次 pilot 在稀疏图 small recall +0.068、all F1 +0.012；样本来自固定 300 图且只有一个训练 seed，不足以断言稀疏泛化的稳定提升。
 
 | 稀疏 300 图 | all P/R/F1 | small P/R/F1 | mean preds |
 |---|---|---|---|
@@ -160,8 +160,8 @@ probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all
 
 ## 下一步建议（2026-09-25，基于上述诊断）
 
-1. **slice_infer 切片推理先行**（AGENTS §7.1 TODO）：448→224 子切片推理 + 坐标还原 + NMS 合并，直击 81% 漏检主模式；零训练成本（~1 天实现+验证），与 RL 产出正交可叠加。验证协议：dense-385 上 baseline/step200/probe50 × {448, 448+224 切片}。
-2. 扩池重训（smallGT≥10 → ≥5，1089 → ~3000 样本）：训练侧数据杠杆，待切片结论后决定是否叠加。
+1. **slice_infer 切片推理待验证**（AGENTS §7.1 TODO）：448→224 子切片推理 + 坐标还原 + NMS 合并；现有 81% “纯漏检”是按同标签 IoU<0.1 定义的误差分类，不足以预言切片效果。验证协议：dense-385 上 baseline/step200/probe50 × {448, 448+224 切片}。
+2. 扩池训练对照：RL-single 的 smallGT≥5 实际仅 **1905 行/10 类**，≥2 为 **3851 行/15 类**（2026-09-28 实测）；先在 ≥2 池重跑 freeze gate，再与 ≥10 池从同一 geom100k 权重做双卡 seed43 对照。
 3. 产出固化：`probe200/checkpoint-50`（dense 峰值）与 `pilot/checkpoint-200`（稀疏均衡）做硬链接快照防滚动清理。
 4. 暂缓：全量 5102 图 mAP（~40h GPU，dense+sparse 双证据已够方向性结论）、跨数据集（AI-TOD/VisDrone）迁移。
 

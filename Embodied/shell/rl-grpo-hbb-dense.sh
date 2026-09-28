@@ -27,6 +27,7 @@ MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
 MAX_OUTPUT_BOXES=${MAX_OUTPUT_BOXES:-256}
 MIN_REWARD_STD=${MIN_REWARD_STD:-0.02}
 KL_BETA=${KL_BETA:-0.02}
+SEED=${SEED:-42}
 LOSS_TOKEN_NORMALIZER=${LOSS_TOKEN_NORMALIZER:-512}
 
 mkdir -p "$OUTPUT_DIR"
@@ -51,4 +52,5 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" python scripts/rl/grpo_loop.py
   --max-output-boxes "$MAX_OUTPUT_BOXES" \
   --min-reward-std "$MIN_REWARD_STD" \
   --kl-beta "$KL_BETA" \
+  --seed "$SEED" \
   --loss-token-normalizer "$LOSS_TOKEN_NORMALIZER"
