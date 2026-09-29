@@ -165,7 +165,7 @@ probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all
 3. 产出固化：`probe200/checkpoint-50`（dense 峰值）与 `pilot/checkpoint-200`（稀疏均衡）做硬链接快照防滚动清理。
 4. 暂缓：全量 5102 图 mAP（~40h GPU，dense+sparse 双证据已够方向性结论）、跨数据集（AI-TOD/VisDrone）迁移。
 
-## v2 双卡扩池对照（2026-09-28 起，step200 dense/sparse 已评；早期步数待评）
+## v2 双卡扩池对照（2026-09-28 起，全部保留的 checkpoint 均完成 dense/sparse 验证）
 
 - 前提修复：`grpo_loop.py` 在复制 reference 权重**之前**对齐 adapter dtype，逐张量核对精确相等；fresh run 首组 log-prob 差超过 `1e-3` 直接中止。旧 pilot checkpoint-200 上 GPU 前向差 **0.00e+00**；geom100k 扩池两步 smoke 首组差 **0.00e+00**，loss 有限并成功存盘。checkpoint-2 恢复至 step3，optimizer/order/cursor 正确延续；恢复后的 policy/reference 已不同，首组差 **0.265** 不应触发 fresh 检查。
 - 双卡 gate 于 2026-09-28 21:15（UTC+8）启动：geom100k 冻结策略，RL-single smallGT≥2 **3851 行 / 15 类**，seed43、512 个样本 × G16、GPU0/1 各一半；输出 `work_dirs/rl_v2_pair_seed43/gate_small2/`，日志 `gate_gpu{0,1}.log`。只有两个 shard 完成、`summary_gate.json` 四门通过且确有 512 组 / 8192 轨迹才允许训练。23:42 因用户准备重启服务器，已停止两个 gate 子进程、编排器退出并 `sync`；当时**尚未通过 gate、训练未启动**。
@@ -180,7 +180,17 @@ probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all
 | seed43 对照 ≥10 step200 | 0.5428 / **0.4558** | 0.5622 / **0.3741** / **0.4493** | 5655 / 4763 | 178 | 27.06 | **PASS** |
 | seed43 扩池 ≥2 step200 | 0.5170 / 0.4429 | 0.5345 / 0.3683 / 0.4361 | 5578 / 5211 | 265 | 28.02 | **FAIL**（small F1、all F1） |
 
-**step200 稀疏 300 图**（smallGT∈[0,9]、seed42 固定采样、hybrid/15 类）：三组预测文件逐图核验为相同的 300 张，结果在 `eval_sparse/`。与旧 pilot seed42 在此子集 all F1 0.5283 / small R 0.5303 不同，这次 seed43 对照只提高 small R，但 all/small F1 都下滑；扩池同样如此，且 small precision 更低。单个训练 seed 的历史收益不可当作已复现结论。
+**dense-385 早期 checkpoint**：相同图像/协议复算原定 final-check；扩池 100/150/200 都未同时满足 small R、small F1 与 overall F1 门槛，对照组仅 step200 通过。扩池 step150 small R 有方向性增加，但 small F1 略低于基线，不能作为达标模型。
+
+| 模型 | all F1 | small R | small F1 | final-check |
+|---|---:|---:|---:|---|
+| 对照 ≥10 step100 | 0.4530 | 0.3642 | 0.4457 | FAIL（small R） |
+| 对照 ≥10 step150 | 0.4447 | 0.3647 | 0.4405 | FAIL |
+| 扩池 ≥2 step100 | 0.4458 | 0.3630 | 0.4390 | FAIL |
+| 扩池 ≥2 step150 | 0.4492 | 0.3728 | 0.4437 | FAIL（small F1） |
+
+
+**稀疏 300 图的 step200 结果**（smallGT∈[0,9]、seed42 固定采样、hybrid/15 类）：基线与两组全部保留的 checkpoint（100/150/200）预测文件逐图核验为**相同的 300 张**，结果在 `eval_sparse/`。与旧 pilot seed42 在此子集 all F1 0.5283 / small R 0.5303 不同，这次 seed43 对照 step200 只提高 small R，但 all/small F1 都下滑；扩池同样如此，且 small precision 更低。单个训练 seed 的历史收益不可当作已复现结论。
 
 | 模型 | all P / F1 | small P / R / F1 | 标签不一致 | 框/图 |
 |---|---:|---:|---:|---:|
@@ -188,8 +198,19 @@ probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all
 | seed43 对照 ≥10 step200 | 0.3971 / 0.4975 | 0.1656 / 0.4848 / 0.2469 | 36 | 7.92 |
 | seed43 扩池 ≥2 step200 | 0.3977 / 0.5054 | 0.1539 / 0.4886 / 0.2341 | 73 | 8.24 |
 
+**sparse-300 早期 checkpoint**：对照 step100 small F1 最高（0.2723），但 all F1 略低于基线，且该步 dense final-check FAIL；对照 step150 稀疏 all/small F1 均略高于基线，dense 却 FAIL。扩池所有保留步数均未同时超过基线稀疏 all/small F1。
+
+| 模型 | sparse all F1 | sparse small P / R / F1 | all FP | 标签不一致 |
+|---|---:|---:|---:|---:|
+| 对照 ≥10 step100 | 0.5143 | 0.1911 / 0.4735 / **0.2723** | 1292 | 18 |
+| 对照 ≥10 step150 | **0.5201** | 0.1761 / 0.4848 / 0.2583 | 1365 | 24 |
+| 扩池 ≥2 step100 | 0.5011 | 0.1755 / 0.4773 / 0.2566 | 1403 | 38 |
+| 扩池 ≥2 step150 | 0.5146 | 0.1726 / 0.4962 / 0.2561 | 1422 | 67 |
+
+**判断**：此次 seed43 下对照 step200 仅通过密集集 final-check，无法同时维持稀疏集 all/small F1；扩池无密集集达标 checkpoint。不要以 freeze gate 4/4 通过或训练奖励上涨推断验证获益，也不据此扩大扩池训练；这些是单条训练轨迹、固定验证图上的结果，并非跨 seed 或跨数据集的因果结论。
+
 
 ## Follow-ups（未做）
 
-- step100/150 的同协议密集集验证运行中；完成后判断扩池轨迹是否曾有可用 checkpoint，勿以单点训练奖励替代验证。
+- 本次 seed43 的保留 checkpoint 均已按相同 dense-385 与 sparse-300 协议评估；下一轮若要判定扩池是否真的有益，需多训练 seed 配对并预先锁定主指标与稀疏退步容忍阈值。
 - Run B ckpt 留存 `work_dirs/rl_grpo_hbb_dense_g16_2k5/snapshots/checkpoint-{250,500,750,1000}` 作反例

@@ -62,7 +62,7 @@
 | B | `work_dirs/rl_grpo_hbb_dense_g16_2k5/` | smallGT≥10 的 712 tile | 16 | 1000（原计划 2500，watcher 终止） | **负迁移**：train reward↑ 但密集团 small AP50 0.275→0.197（配对 3/3 负）；奖励/协议错位，ckpt 作废 |
 | v2 pilot | `work_dirs/rl_grpo_hbb_dense_v2_pilot/` | RL-single 完整单类 GT，smallGT≥10 的 1089 样本 | 16 | 250 | **单次训练正向信号**：dense-385 step200 small R 0.3622→0.3734、all F1 +0.0082；step250 small F1 回落、final-check FAIL。尚无训练 seed 复验 |
 | v2 probe | `work_dirs/rl_grpo_hbb_dense_v2_probe200/` | pilot step200 权重 warm-start，重置优化器/数据顺序/reference，LR 2.5e-7 + KL 0.05 | 16 | 150 | probe50 dense-385 all F1 0.4615 / small R 0.3818 为**探索性峰值**；首组 policy/reference log-prob 差 0.453，不能据此确认漂移原因或收敛步数 |
-| v2 pair43 | `work_dirs/rl_v2_pair_seed43/` | geom100k 起步：GPU0 smallGT≥10（1089/8 类）vs GPU1 ≥2（3851/15 类），seed43 | 16 | gate PASS；各训练 200 步 | dense-385 step200：对照 all F1 **0.4558** / small R **0.3741**，final PASS；扩池 all F1 **0.4429** / small F1 **0.4361**，final FAIL。sparse-300 两组 all/small F1 均低于基线；step100/150 在评 |
+| v2 pair43 | `work_dirs/rl_v2_pair_seed43/` | geom100k 起步：GPU0 smallGT≥10（1089/8 类）vs GPU1 ≥2（3851/15 类），seed43 | 16 | gate 4/4 PASS；各训练 200 步 | dense-385：对照仅 step200 final PASS（all F1 0.4558 / small R 0.3741）；扩池 step100/150/200 均 FAIL。sparse-300：对照 step150 all/small F1 略高于基线，但 dense FAIL；对照 step200 的 sparse all/small F1 均回落。未找到同时满足 dense final-check 与稀疏 F1 不退步的 checkpoint；单 seed 对扩池不利，尚不能推广为稳定效应 |
 
 ## 新 run 怎么记
 
