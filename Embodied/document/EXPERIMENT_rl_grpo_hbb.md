@@ -170,9 +170,9 @@ probe50 稀疏侧仍全面 ≥ baseline（small R +0.046、small F1 +0.012、all
 - 前提修复：`grpo_loop.py` 在复制 reference 权重**之前**对齐 adapter dtype，逐张量核对精确相等；fresh run 首组 log-prob 差超过 `1e-3` 直接中止。旧 pilot checkpoint-200 上 GPU 前向差 **0.00e+00**；geom100k 扩池两步 smoke 首组差 **0.00e+00**，loss 有限并成功存盘。checkpoint-2 恢复至 step3，optimizer/order/cursor 正确延续；恢复后的 policy/reference 已不同，首组差 **0.265** 不应触发 fresh 检查。
 - 双卡 gate 于 2026-09-28 21:15（UTC+8）启动：geom100k 冻结策略，RL-single smallGT≥2 **3851 行 / 15 类**，seed43、512 个样本 × G16、GPU0/1 各一半；输出 `work_dirs/rl_v2_pair_seed43/gate_small2/`，日志 `gate_gpu{0,1}.log`。只有两个 shard 完成、`summary_gate.json` 四门通过且确有 512 组 / 8192 轨迹才允许训练。23:42 因用户准备重启服务器，已停止两个 gate 子进程、编排器退出并 `sync`；当时**尚未通过 gate、训练未启动**。
 - 暂停点：shard0 **2563/4096**、shard1 **2387/4096**；全部 JSONL 行均完整可解析、`(sample_id,k)` 唯一，且与 seed43 抽样 / 分片匹配。重启后在 `Embodied/` 工作根执行 `RESUME_GATE=1 nohup bash shell/rl-grpo-hbb-v2-pair.sh >> work_dirs/rl_v2_pair_seed43/orchestrator.log 2>&1 < /dev/null &`；launcher 保留旧日志，`freeze_check.py` 按 `(sample_id,k)` 跳过已有结果。不要不设 `RESUME_GATE` 重跑编排器；如 GPU 尚不可新建进程，保留文件待 GPU 恢复再继续。
-- 2026-09-28 23:46（UTC+8）服务器重启后，两张 4090 均可新建 CUDA 进程；`RESUME_GATE=1` 启动并分别报告跳过 **2563 / 2387** 条，随后两份 JSONL 继续增长。当前仍须等待四门汇总，不能提前放行训练。
-- 通过后由 `shell/rl-grpo-hbb-v2-pair.sh` 自动并发启动 GPU0 `control_small10`（1089 行 / 8 类）与 GPU1 `expanded_small2`（3851 行 / 15 类）：同从 geom100k 权重、seed43、G16、LR 5e-7、KL 0.02、200 步、每 50 步存档。唯一预设实验因素是训练池过滤阈值；训练输入顺序随池变化，不应解释为逐 minibatch 配对。总控日志：`work_dirs/rl_v2_pair_seed43/orchestrator.log`。
-- 待评估：每个 checkpoint 在同一 canonical dense-385、固定 sparse-300 图像上用 hybrid/15 类协议比 micro F1、小目标召回/F1、预测框数/误报、类别错误；和 geom100k 及既有 pilot seed42 对照。未复验前不称扩池效果或多 seed 稳定性。
+- 2026-09-28 23:46（UTC+8）服务器重启后，两张 4090 均可新建 CUDA 进程；`RESUME_GATE=1` 启动并分别跳过 **2563 / 2387** 条。2026-09-29 01:11 gate 完成 **8192 轨迹 / 512 组**，四门全过：pairwise **0.9133**（≥0.70）、group-ρ **0.8447**（≥0.60）、signal **0.9629**（≥0.70）、timing **0.000166**（≤0.25）；parse_fail 9.3%。汇总在 `gate_small2/summary_gate.json`。
+- Gate 通过后，`shell/rl-grpo-hbb-v2-pair.sh` 并发启动 GPU0 `control_small10`（1089 行 / 8 类）与 GPU1 `expanded_small2`（3851 行 / 15 类）：同从 geom100k 权重、seed43、G16、LR 5e-7、KL 0.02、200 步、每 50 步存档。**GPU1 04:27、GPU0 06:33 均跑满 200 步且正常退出**（编排器 `failed=0`）；首组 policy/reference log-prob 差均 **0.00e+00**。各保留 checkpoint-100/150/200，50 按滚动策略清理。唯一预设实验因素是训练池过滤阈值；训练输入顺序随池变化，不应解释为逐 minibatch 配对。
+- 验证进行中：2026-09-29 08:44 已在双卡启动 step200 的同协议 canonical dense-385 hybrid/15 类评估；随后按固定 sparse-300 图像比较 micro F1、小目标召回/F1、误报和类别错误，并评估 step100/150。基线与 pilot seed42 同协议对照，**当前没有验证集结论**，train reward 不能代替验证。
 
 ## Follow-ups（未做）
 

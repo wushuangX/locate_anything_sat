@@ -62,7 +62,7 @@
 | B | `work_dirs/rl_grpo_hbb_dense_g16_2k5/` | smallGT≥10 的 712 tile | 16 | 1000（原计划 2500，watcher 终止） | **负迁移**：train reward↑ 但密集团 small AP50 0.275→0.197（配对 3/3 负）；奖励/协议错位，ckpt 作废 |
 | v2 pilot | `work_dirs/rl_grpo_hbb_dense_v2_pilot/` | RL-single 完整单类 GT，smallGT≥10 的 1089 样本 | 16 | 250 | **单次训练正向信号**：dense-385 step200 small R 0.3622→0.3734、all F1 +0.0082；step250 small F1 回落、final-check FAIL。尚无训练 seed 复验 |
 | v2 probe | `work_dirs/rl_grpo_hbb_dense_v2_probe200/` | pilot step200 权重 warm-start，重置优化器/数据顺序/reference，LR 2.5e-7 + KL 0.05 | 16 | 150 | probe50 dense-385 all F1 0.4615 / small R 0.3818 为**探索性峰值**；首组 policy/reference log-prob 差 0.453，不能据此确认漂移原因或收敛步数 |
-| v2 pair43 | `work_dirs/rl_v2_pair_seed43/` | geom100k 起步：GPU0 smallGT≥10（1089/8 类）vs GPU1 ≥2（3851/15 类），seed43 | 16 | gate 续跑中，训练未启动 | 23:42 为服务器重启暂停，保留 2563+2387 条；23:46 通过 `RESUME_GATE=1` 双卡续跑并跳过已有采样；**暂无 gate 结论或训练结果** |
+| v2 pair43 | `work_dirs/rl_v2_pair_seed43/` | geom100k 起步：GPU0 smallGT≥10（1089/8 类）vs GPU1 ≥2（3851/15 类），seed43 | 16 | gate 512×16 PASS；各训练 200 步完成 | 重启后 gate 四门通过，首组 reference 差均为 0；各保留 ckpt100/150/200。canonical dense-385 与 sparse-300 评估进行中，**尚无验证指标** |
 
 ## 新 run 怎么记
 
