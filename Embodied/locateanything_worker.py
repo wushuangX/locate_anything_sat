@@ -15,7 +15,8 @@ from typing import Optional, Sequence, Union
 
 import torch
 from PIL import Image
-from transformers import AutoModel, AutoTokenizer, AutoProcessor
+from transformers import AutoConfig, AutoModel, AutoTokenizer, AutoProcessor
+from eaglevl.utils.locany.geometry_protocol import protocol_from_config, parse_answer
 
 
 class LocateAnythingWorker:
@@ -39,6 +40,11 @@ class LocateAnythingWorker:
         self.scheduler = scheduler
         self.group_size = group_size
 
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        self.geometry_protocol = protocol_from_config(config)
+        if self.geometry_protocol == 'multitask_v1' and use_batch_runtime:
+            raise ValueError('multitask_v1 requires standard runtime; external batch runtime is not adapted')
+
         if use_batch_runtime:
             self._init_batch_runtime(
                 model_path=model_path,
@@ -50,9 +56,7 @@ class LocateAnythingWorker:
             )
             return
 
-        from transformers import AutoConfig
         resolved_attn = attn if attn != "la_flash" else "sdpa"
-        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
         config._attn_implementation = resolved_attn
         if hasattr(config, "text_config"):
             config.text_config._attn_implementation = resolved_attn
@@ -202,6 +206,7 @@ class LocateAnythingWorker:
         replace_text: Optional[str] = None,
         n_future_tokens: Optional[int] = None,
         return_ids: bool = False,
+        output_geometry: Optional[str] = None,
     ) -> dict:
         messages = self._build_messages(
             image=image,
@@ -249,6 +254,13 @@ class LocateAnythingWorker:
             **generate_kw,
         )
 
+        if self.geometry_protocol == 'multitask_v1':
+            if not isinstance(response, dict):
+                raise RuntimeError('Checkpoint runtime did not return multitask diagnostics')
+            response['parsed'] = parse_answer(response['answer'], output_geometry, image.width, image.height)
+            response['output_geometry'] = output_geometry
+            return response
+
         if isinstance(response, dict):
             return response
         result = {"answer": response[0] if isinstance(response, tuple) else response}
@@ -275,6 +287,7 @@ class LocateAnythingWorker:
         replace_text: Optional[str] = None,
         n_future_tokens: Optional[int] = None,
         return_ids: bool = False,
+        output_geometry: Optional[str] = None,
     ) -> dict:
         """
         Run a single perception query.
@@ -329,6 +342,7 @@ class LocateAnythingWorker:
             replace_text=replace_text,
             n_future_tokens=n_future_tokens,
             return_ids=return_ids,
+            output_geometry=output_geometry,
         )
 
     @torch.no_grad()
@@ -344,6 +358,7 @@ class LocateAnythingWorker:
         scheduler: Optional[str] = None,
         group_size: Optional[int] = None,
         verbose: bool = True,
+        output_geometry: Optional[str] = None,
     ) -> list[dict]:
         """Run a batch of `(image, question)` perception queries.
 
@@ -387,6 +402,7 @@ class LocateAnythingWorker:
                     "visual_prompt_box": visual_prompt_box,
                     "visual_prompt_box_format": visual_prompt_box_format,
                     "replace_text": replace_text,
+                    "output_geometry": item.get("output_geometry", output_geometry) if isinstance(item, dict) else output_geometry,
                 }
             )
 
@@ -406,6 +422,7 @@ class LocateAnythingWorker:
                     visual_prompt_box=row["visual_prompt_box"],
                     visual_prompt_box_format=row["visual_prompt_box_format"],
                     replace_text=row["replace_text"],
+                    output_geometry=row["output_geometry"],
                 )
                 for row in rows
             ]
@@ -436,11 +453,19 @@ class LocateAnythingWorker:
 
     def detect(self, image: Image.Image, categories: list[str], **kwargs) -> dict:
         """Object detection / document layout analysis."""
+        if self.geometry_protocol == 'multitask_v1':
+            cats = '</c>'.join(c.replace('-', ' ') for c in categories)
+            kwargs.setdefault('output_geometry', 'hbb')
+            return self.predict(image, f'Locate all fully visible instances that match the following description: {cats}.', **kwargs)
         cats = "</c>".join(categories)
         prompt = f"Locate all the instances that matches the following description: {cats}."
         return self.predict(image, prompt, **kwargs)
 
     def detect_oriented(self, image: Image.Image, categories: list[str], **kwargs) -> dict:
+        if self.geometry_protocol == 'multitask_v1':
+            cats = '</c>'.join(c.replace('-', ' ') for c in categories)
+            kwargs.setdefault('output_geometry', 'obb')
+            return self.predict(image, f'Locate all fully visible instances that match the following description: {cats}. Use oriented bounding boxes.', **kwargs)
         cats = "</c>".join(categories)
         prompt = f"Locate all oriented instances that match the following description: {cats}."
         kwargs.setdefault("n_future_tokens", 7)
@@ -483,7 +508,12 @@ class LocateAnythingWorker:
         pairs = []
         for image, categories in requests:
             cats = categories if isinstance(categories, str) else "</c>".join(categories)
-            prompt = f"Locate all the instances that matches the following description: {cats}."
+            if self.geometry_protocol == 'multitask_v1':
+                cats = cats.replace('-', ' ')
+                prompt = f'Locate all fully visible instances that match the following description: {cats}.'
+                kwargs.setdefault('output_geometry', 'hbb')
+            else:
+                prompt = f"Locate all the instances that matches the following description: {cats}."
             pairs.append((image, prompt))
         return self.predict_batch(pairs, **kwargs)
 
@@ -517,6 +547,8 @@ class LocateAnythingWorker:
 
     def point(self, image: Image.Image, phrase: str, **kwargs) -> dict:
         """Pointing."""
+        if self.geometry_protocol == 'multitask_v1':
+            kwargs.setdefault('output_geometry', 'point')
         prompt = f"Point to: {phrase}."
         return self.predict(image, prompt, **kwargs)
 

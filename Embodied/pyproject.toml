@@ -22,6 +22,9 @@ dependencies = ["transformers==4.57.1", "tokenizers==0.22.0", "sentencepiece==0.
     "ebmlite", "triton>=3.1.0", "scipy>=1.10.0", "datasets>=2.21.0",  "dotenv", "decord", "scikit-image", "imagehash", "opencv-python-headless"
 ]
 
+[project.optional-dependencies]
+multitask-eval = ["shapely==2.1.2"]
+
 [project.urls]
 "Homepage" = "https://nvlabs.github.io/EAGLE/"
 "Bug Tracker" = "https://github.com/NVlabs/EAGLE/issues"
