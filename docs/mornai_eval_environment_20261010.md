@@ -50,3 +50,15 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 - eval 自动等待完整接收、校验传输包、解压至 `/data/checkpoints/checkpoint-70000`，再核对全部推理文件。状态 `/data/checkpoints/checkpoint-70000.transfer-status.json`；只有 `stage=ready` 且 `all_files_verified=true` 才可使用。
 - 旧 50500 checkpoint 保留；本次未同步仓库代码。checkpoint 自包含运行时代码属于模型产物，未覆盖仓库文件。
 - 先前数据包两端 SHA256 已一致：`dbd12ba1a3b094b1528f9f86a5c41dec5cbb94de20c78dcf49a01ae259b8933d`。此记录不表示数据已解压或评估已启动。
+
+## 2026-10-11 评估与可视化启动
+
+- 70000 传输包 SHA256 和解压后全部推理文件校验通过，状态为 `ready`。代表性数据包已解压到 `/data/dota_multitask_eval_subset`。
+- 评估代码经 Git 提交并推送，独立部署目录 `/data/locany_eval_git`，运行 commit `3e5c4b69b6148a63e6a232c67228831342fa2661`。启动前及启动后确认 Git 工作区干净；旧快照目录和训练 checkout 均未更新。复用旧目录的 `.venv`，通过 Git 本地 exclude 排除环境链接。
+- checkpoint 自包含的 runtime 由模型目录加载；Git 部署的 worker、codec、评估与 UI 负责调用和解析。checkpoint 校验清单记录实际 runtime 内容，不能用 Git SHA 单独代表训练时的未提交 runtime。
+- 22 条 smoke 查询（每个 T1–T11 一正一负）已完成并生成 `DONE`，目录 `/data/eval_results/ckpt70000_val_fast_smoke_20261011`。模型加载和推理成功，不将 smoke 结果当完整性能指标。
+- 约 13:27 启动正式 Fast val 子集评估，全部 3330 条查询，进程启动 PID 82389，输出 `/data/eval_results/ckpt70000_val_fast_20261011`。已确认至少 20 条预测落盘；此处记录的是启动时状态。
+- Streamlit 启动 PID 82219，监听 `0.0.0.0:8001`，默认 checkpoint 为 70000，离线结果指向上述正式评估目录。健康接口返回 `ok`；AppTest 检查 train/val × T1–T11 共 22 个页面全部通过。
+- 批量评估期间可浏览已落盘结果；交互 GPU 推理默认禁用，可通过页面并行选项主动启用，会加载第二份模型并检查空闲显存。
+- 当前所有 launcher 均从 `/data/locany_eval_git/Embodied` 执行；前文旧快照目录命令仅保留为历史部署记录。日志为输出目录中的 `eval.log` / `streamlit.log`，启动记录为 `launch.json` / `streamlit_launch.json`。
+- 本轮为代表性 val 子集评估，未运行完整 121200 条 val，也未使用 test。最终指标在 `metrics.json`，完成标记为 `DONE`。
