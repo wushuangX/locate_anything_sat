@@ -161,6 +161,7 @@ class LocanyGRPOTrainer(GRPOTrainer):
         original=qwen.image_processing
         def inject(input_ids,visual_features,image_token_index):
             emb=qwen.get_input_embeddings()(input_ids)
+            if visual_features is None:return emb
             flat=emb.reshape(-1,emb.shape[-1]).clone()
             positions=input_ids.reshape(-1)==image_token_index
             features=visual_features.reshape(-1,flat.shape[-1])
