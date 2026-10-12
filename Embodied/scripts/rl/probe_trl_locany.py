@@ -27,6 +27,7 @@ def main():
     ap.add_argument('--model', required=True)
     ap.add_argument('--data-root', required=True)
     ap.add_argument('--output', required=True)
+    ap.add_argument('--point-reward', choices=['inside','center'], default='inside')
     ap.add_argument('--sample-index', type=int, default=0)
     ap.add_argument('--task', default='T6', choices=['T1', 'T5', 'T6'])
     args = ap.parse_args()
@@ -69,6 +70,7 @@ def main():
         cx,cy,w,h,angle=obj['obb'];a=math.radians(angle);c,s=math.cos(a),math.sin(a)
         gt=Polygon([(cx+x*c-y*s,cy+x*s+y*c) for x,y in [(-w/2,-h/2),(w/2,-h/2),(w/2,h/2),(-w/2,h/2)]])
         if geometry=='hbb':gt=gt.envelope
+        record('point_reward_mode',args.point_reward)
         record('sample', {'sample_id':row['multitask']['sample_id'], 'image':row['image'], 'question':question, 'geometry':geometry, 'split':'train'})
         worker=LocateAnythingWorker(args.model,device='cuda')
         model=worker.model
@@ -116,7 +118,9 @@ def main():
                     item=parsed['items'][0]
                     if item['valid'] and item['label']==label and item['geometry']==geometry:
                         coords=item['coordinates']
-                        if geometry=='point':value=float(gt.covers(Point(*coords)))
+                        if geometry=='point':
+                            if args.point_reward=='inside':value=float(gt.covers(Point(*coords)))
+                            else:value=math.exp(-math.hypot(coords[0]-cx,coords[1]-cy)/max(math.hypot(w,h),1.))
                         else:
                             if geometry=='hbb':pred=box(*coords)
                             else:
