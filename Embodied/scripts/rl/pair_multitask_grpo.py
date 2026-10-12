@@ -5,6 +5,7 @@ import datetime
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -13,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from multitask_grpo_data import dump_json
+from safe_rl_state import load_state,equal_state
 
 
 def main():
@@ -55,18 +57,24 @@ def main():
         checks=[]
         for tag in tags:
             c=root/'smoke_continuous'/tag;r=root/'smoke_resumed'/tag
-            cs=torch.load(c/'checkpoint-4/locany_rl_state.pt',map_location='cpu',weights_only=False)
-            rs=torch.load(r/'checkpoint-4/locany_rl_state.pt',map_location='cpu',weights_only=False)
+            cs=load_state(c/'checkpoint-4/locany_rl_state')
+            rs=load_state(r/'checkpoint-4/locany_rl_state')
             ca=load_file(str(c/'checkpoint-4/adapter_model.safetensors'));ra=load_file(str(r/'checkpoint-4/adapter_model.safetensors'))
             maxdiff=max(float((ca[k]-ra[k]).abs().max()) for k in ca)
             trace_equal=cs['group_trace']==rs['group_trace']
             cached_equal=all(torch.equal(a['old_per_token_logps'],b['old_per_token_logps']) for a,b in zip(cs['buffer'],rs['buffer'],strict=True))
-            check={'tag':tag,'max_adapter_diff':maxdiff,'trajectory_equal':trace_equal,'cached_old_logps_equal':cached_equal,'reference_equal':cs['reference_hash']==rs['reference_hash'],'micro_step_equal':cs['micro_step']==rs['micro_step'],'effective_updates':cs['effective_updates']}
+            optimizer_equal=equal_state(load_state(c/'checkpoint-4/optimizer_safe'),load_state(r/'checkpoint-4/optimizer_safe'))
+            rng_equal=equal_state(load_state(c/'checkpoint-4/rng_safe'),load_state(r/'checkpoint-4/rng_safe'))
+            check={'optimizer_equal':optimizer_equal,'rng_equal':rng_equal,'tag':tag,'max_adapter_diff':maxdiff,'trajectory_equal':trace_equal,'cached_old_logps_equal':cached_equal,'reference_equal':cs['reference_hash']==rs['reference_hash'],'micro_step_equal':cs['micro_step']==rs['micro_step'],'effective_updates':cs['effective_updates']}
             # Same GPU/seed/runtime should be deterministic; require exact trajectory and weights.
-            if not trace_equal or maxdiff!=0 or not cached_equal or not check['reference_equal'] or not check['micro_step_equal'] or cs['effective_updates']<1:
+            if not optimizer_equal or not rng_equal or not trace_equal or maxdiff!=0 or not cached_equal or not check['reference_equal'] or not check['micro_step_equal'] or cs['effective_updates']<1:
                 dump_json(root/'resume_checks.json',checks+[check]);raise RuntimeError('Resume equivalence failed: '+str(check))
             checks.append(check)
         dump_json(root/'resume_checks.json',checks)
+        # Retain one resume-proven smoke checkpoint/tag; only remove our own redundant test artifacts.
+        for tag in tags:
+            for folder,step in [('smoke_continuous',2),('smoke_continuous',4),('smoke_resumed',2)]:
+                shutil.rmtree(root/folder/tag/f'checkpoint-{step}')
         pair('benchmark','runs',1000)
         summaries=[json.loads((root/'runs'/t/'benchmark_summary.json').read_text()) for t in tags]
         runconfigs=[json.loads((root/'runs'/t/'run_config.json').read_text()) for t in tags]

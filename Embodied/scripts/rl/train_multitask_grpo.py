@@ -10,6 +10,8 @@ import hashlib
 import json
 import math
 import os
+import random
+import numpy as np
 import shutil
 import subprocess
 import sys
@@ -29,6 +31,7 @@ from PIL import Image
 import grpo_loop as legacy
 from multitask_grpo_data import DataIndex,dump_json,digest,geometry_reward,quick_specs,selftest
 from scripts.eval_dota_multitask import prepared,compute_metrics
+from safe_rl_state import save_state,load_state,selftest_state
 
 
 def cpu_tree(value):
@@ -200,8 +203,25 @@ class LocanyGRPOTrainer(GRPOTrainer):
         lm.set_adapter(self.policy)
         lm.save_pretrained(dest,selected_adapters=[self.policy])
         self.processing_class.save_pretrained(dest)
-        torch.save(self.args,dest/'training_args.bin')
+        dump_json(dest/'training_args.json',self.args.to_dict())
         dump_json(dest/'locany_dependency.json',{'sft_checkpoint':self.run_config['model_path'],'config_sha256':digest(Path(self.run_config['model_path'])/'config.json'),'geometry_codec_version':'multitask_diagonal_v1','policy_adapter':self.policy,'run_config':self.run_config})
+
+    def _save_optimizer_and_scheduler(self,output_dir):
+        save_state(Path(output_dir)/'optimizer_safe',self.optimizer.state_dict())
+        save_state(Path(output_dir)/'scheduler_safe',self.lr_scheduler.state_dict())
+
+    def _load_optimizer_and_scheduler(self,checkpoint):
+        if checkpoint is None:return
+        self.optimizer.load_state_dict(load_state(Path(checkpoint)/'optimizer_safe'))
+        self.lr_scheduler.load_state_dict(load_state(Path(checkpoint)/'scheduler_safe'))
+
+    def _save_rng_state(self,output_dir):
+        save_state(Path(output_dir)/'rng_safe',{'python':random.getstate(),'numpy':np.random.get_state(),'cpu':torch.get_rng_state(),'cuda':torch.cuda.get_rng_state_all()})
+
+    def _load_rng_state(self,checkpoint):
+        if checkpoint is None:return
+        rng=load_state(Path(checkpoint)/'rng_safe')
+        random.setstate(rng['python']);np.random.set_state(rng['numpy']);torch.set_rng_state(rng['cpu']);torch.cuda.set_rng_state_all(rng['cuda'])
 
     def _save_checkpoint(self,model,trial):
         super()._save_checkpoint(model,trial)
@@ -215,14 +235,14 @@ class LocanyGRPOTrainer(GRPOTrainer):
                  'protected':self.protected,'best_score':self.best_score,'guard_counts':self.guard_counts,
                  'schedule_sha256':self.index.schedule_sha256,'data_hashes':self.index.hashes,
                  'seed':self.run_config['seed'],'beta':self.run_config['beta']}
-        torch.save(sidecar,dest/'locany_rl_state.pt')
+        save_state(dest/'locany_rl_state',sidecar)
         dump_json(dest/'COMPLETE.json',{'step':self.state.global_step,'effective_updates':self.effective_updates,'reference_hash':self.reference_hash})
         self.prune()
 
     def _load_from_checkpoint(self,resume_from_checkpoint,model=None):
         dest=Path(resume_from_checkpoint)
         if not (dest/'COMPLETE.json').exists():raise RuntimeError('Incomplete RL checkpoint')
-        saved=torch.load(dest/'locany_rl_state.pt',map_location='cpu',weights_only=False)
+        saved=load_state(dest/'locany_rl_state')
         if saved['schedule_sha256']!=self.index.schedule_sha256 or saved['data_hashes']!=self.index.hashes:raise RuntimeError('Resume data/schedule mismatch')
         if saved['beta']!=self.run_config['beta'] or saved['seed']!=self.run_config['seed']:raise RuntimeError('Resume experiment mismatch')
         super()._load_from_checkpoint(resume_from_checkpoint,model)
@@ -324,6 +344,7 @@ def run(args):
     cfg.update(phase=args.phase,stop_step=args.stop_step)
     out=Path(args.output);out.mkdir(parents=True,exist_ok=True)
     selftest()
+    selftest_state(out)
     if args.phase=='selftest':return
     import trl,transformers,peft
     if trl.__version__!='0.24.0':raise RuntimeError('Validated runtime requires TRL 0.24.0')
