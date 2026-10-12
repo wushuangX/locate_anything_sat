@@ -86,6 +86,15 @@ class LocanyGRPOTrainer(GRPOTrainer):
         super().__init__(model=worker.model.language_model,reward_funcs=self.reward,**kwargs)
         self.add_callback(RunControl(self))
 
+    def native_predict(self,*args,**kwargs):
+        # Native top-p filtering contains a CUDA cumsum without a deterministic
+        # implementation. Keep its established sampler; deterministic algorithms
+        # are required for differentiable probability/backward, not this no-grad path.
+        deterministic=torch.are_deterministic_algorithms_enabled()
+        torch.use_deterministic_algorithms(False)
+        try:return self.worker.predict(*args,**kwargs)
+        finally:torch.use_deterministic_algorithms(deterministic)
+
     def bind_context(self,row_idx):
         self.current_index=int(row_idx);self.current_row=self.index.load(row_idx)
         record=self.current_row['record'];image=Image.open(Path(self.index.root)/record['image']).convert('RGB')
@@ -137,7 +146,7 @@ class LocanyGRPOTrainer(GRPOTrainer):
                     if len(captured)<8:captured.append(output.logits[0,-1].detach().float().cpu())
                 handle=lm.register_forward_hook(hook) if check else None
                 try:
-                    result=self.worker.predict(self.current_image,prompts[i],generation_mode='slow',temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=self.max_completion_length,return_ids=True)
+                    result=self.native_predict(self.current_image,prompts[i],generation_mode='slow',temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=self.max_completion_length,return_ids=True)
                 finally:
                     if handle:handle.remove()
                 ids=result['sequences'].view(-1).tolist()
@@ -293,7 +302,7 @@ class LocanyGRPOTrainer(GRPOTrainer):
                 for spec,record in specs:
                     image=Image.open(root/record['image']).convert('RGB')
                     budget=128 if spec['output']['cardinality']=='single' else 1024
-                    pred=self.worker.predict(image,record['conversations'][0]['value'],generation_mode='fast',temperature=0.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=budget,return_ids=False)
+                    pred=self.native_predict(image,record['conversations'][0]['value'],generation_mode='fast',temperature=0.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=budget,return_ids=False)
                     pred={k:v for k,v in pred.items() if k not in ('sequences','history','parsed')};pred['sample_id']=spec['sample_id']
                     fh.write(json.dumps(pred,ensure_ascii=False)+'\n')
                     groups[spec['task_id']].append(prepared(spec,record,canonical[spec['image_id']],pred,names))
@@ -408,7 +417,7 @@ def run(args):
     summary={'phase':args.phase,'step':trainer.state.global_step,'effective_updates':trainer.effective_updates,'groups':len(trainer.group_trace),'training_seconds':time.monotonic()-trainer.training_start,'peak_allocated_gib':torch.cuda.max_memory_allocated()/1024**3,'reference_hash':trainer.reference_hash,'last_checkpoint':str(final),'trainer_metrics':result.metrics,'last_sample':trainer.group_trace[-1]['sample_id'] if trainer.group_trace else None}
     if args.phase=='smoke':
         row=trainer.current_row;trainer.worker.model.eval()
-        pred=worker.predict(trainer.current_image,row['record']['conversations'][0]['value'],generation_mode='fast',temperature=0.,max_new_tokens=128)
+        pred=trainer.native_predict(trainer.current_image,row['record']['conversations'][0]['value'],generation_mode='fast',temperature=0.,max_new_tokens=128)
         summary['fast_answer']=pred['answer'];summary['probability_check']=json.loads((out/'probability_check.json').read_text()) if (out/'probability_check.json').exists() else None
     if args.phase=='train':
         summary['final_quick']=trainer.evaluate_suite()['summary']
