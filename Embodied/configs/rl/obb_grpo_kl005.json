@@ -1,0 +1,1 @@
+{"model_path":"/data/eval_transfer/checkpoint-16500","data_root":"/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1","eval_root":"/data/dota_multitask_eval_subset","seed":42,"beta":0.05}
