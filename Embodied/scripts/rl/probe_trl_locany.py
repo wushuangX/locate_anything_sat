@@ -62,7 +62,7 @@ def main():
         spec=specs[row['multitask']['sample_id']]
         canonical=next(c for c in map(json.loads,(root/'canonical/train.jsonl').open()) if c['image_id']==spec['image_id'])
         obj=next(o for o in canonical['objects'] if o['object_id']==spec['output']['target_object_ids'][0])
-        names={c['id']:c['canonical_name'] for c in json.loads((root/'configs/categories.json').read_text())}
+        names={c['id']:c['canonical_name'] for c in json.loads((root/'configs/categories.json').read_text())['categories']}
         label=names[spec['query']['category_id']]
         cx,cy,w,h,angle=obj['obb'];a=math.radians(angle);c,s=math.cos(a),math.sin(a)
         gt=Polygon([(cx+x*c-y*s,cy+x*s+y*c) for x,y in [(-w/2,-h/2),(w/2,-h/2),(w/2,h/2),(-w/2,h/2)]])
