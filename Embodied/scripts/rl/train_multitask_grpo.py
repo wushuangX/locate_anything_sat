@@ -168,16 +168,26 @@ class LocanyGRPOTrainer(GRPOTrainer):
             flat[positions]=features.to(flat.dtype)
             return flat.reshape_as(emb)
         qwen.image_processing=inject
+        # Match Slow's prefill and one-token cached decoding exactly. Keep KV
+        # tensors in the autograd graph: detaching them would lose prefix gradients.
+        chosen=[];entropies=[];past=None
         try:
-            out=lm(input_ids=full,attention_mask=torch.ones_like(full),visual_features=self.context['vit_embeds'],image_token_index=model.config.image_token_index,use_cache=False,return_dict=True)
+            for i,token in enumerate(completion):
+                prefix=full[:,:self.context['prompt_ids'].shape[1]+i]
+                start=0 if past is None else past[0][0].shape[2]
+                positions=torch.arange(start,prefix.shape[1],device=prefix.device).view(1,-1)
+                inputs=lm.prepare_inputs_for_generation(prefix,past,None,inputs_embeds=None,use_cache=True,position_ids=positions)
+                if past is None:
+                    inputs.update(visual_features=self.context['vit_embeds'],image_token_index=model.config.image_token_index)
+                out=lm(**inputs,return_dict=True)
+                lp=torch.log_softmax(out.logits[:,-1,:].float(),dim=-1)
+                chosen.append(lp[:,token])
+                if entropy:
+                    with torch.no_grad():entropies.append(-(lp.exp()*lp).sum(-1))
+                past=tuple((kv[0][:,:,:prefix.shape[1],:],kv[1][:,:,:prefix.shape[1],:]) for kv in out.past_key_values)
         finally:qwen.image_processing=original
-        # Slice BEFORE fp32 softmax; only completion token distributions are needed.
-        logits=out.logits[:,-completion.numel()-1:-1,:].float()
-        lp=torch.log_softmax(logits,dim=-1)
-        chosen=lp.gather(-1,completion.view(1,-1,1)).squeeze(-1)
-        ent=None
-        if entropy:
-            with torch.no_grad():ent=-(lp.exp()*lp).sum(-1)
+        chosen=torch.stack(chosen,dim=1)
+        ent=torch.stack(entropies,dim=1) if entropy else None
         if not torch.isfinite(chosen).all():raise RuntimeError('Nonfinite token probabilities')
         return chosen,ent
 
@@ -326,6 +336,14 @@ class RunControl(TrainerCallback):
         t=self.t
         if t._last_gradient_nonzero:t.effective_updates+=1
         cfg=t.run_config
+        if cfg['phase']=='train':
+            budget_path=Path(args.output_dir).parents[1]/'budget.json'
+            if budget_path.exists():
+                budget=json.loads(budget_path.read_text())
+                maximum=int(budget['max_steps'])
+                if maximum>state.max_steps:
+                    args.max_steps=state.max_steps=maximum
+                    if state.global_step<maximum:control.should_training_stop=False
         if cfg.get('stop_step') and state.global_step>=cfg['stop_step']:control.should_training_stop=True
         if cfg['phase']=='benchmark' and t.effective_updates>=20 and state.global_step%2==0:control.should_training_stop=True
         # Checkpoints at complete optimizer boundaries, including an early stop.
@@ -364,8 +382,20 @@ def run(args):
     train_args=GRPOConfig(output_dir=str(out),max_steps=args.max_steps,num_generations=8,per_device_train_batch_size=1,gradient_accumulation_steps=8,steps_per_generation=8,num_iterations=2,beta=cfg['beta'],epsilon=.2,loss_type='grpo',scale_rewards='group',temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_completion_length=128,max_prompt_length=None,learning_rate=5e-7,lr_scheduler_type='constant',warmup_steps=0,max_grad_norm=1.,bf16=True,gradient_checkpointing=False,report_to='none',logging_steps=1,save_steps=2 if args.phase=='smoke' else 50,save_strategy='steps',save_total_limit=None,use_vllm=False,disable_dropout=True,remove_unused_columns=False,shuffle_dataset=False,seed=42,data_seed=42,dataloader_num_workers=0,dataloader_pin_memory=False,ignore_data_skip=False)
     trainer=LocanyGRPOTrainer(worker,index,cfg,args=train_args,train_dataset=index,processing_class=tokenizer)
     if args.phase=='benchmark' and not args.resume:
-        trainer.evaluate_suite(baseline=True)
-        trainer.evaluate_suite(full=True,baseline=True)
+        # Reuse only the exact unchanged SFT/Fast baseline from a preceding
+        # preflight; policy probability implementation does not affect Fast eval.
+        source=os.environ.get('BASELINE_SOURCE')
+        for full in (False,True):
+            filename=f'baseline_{"full" if full else "quick"}.json'
+            cached=Path(source)/out.name/filename if source else None
+            if cached and cached.exists():
+                original=json.loads((cached.parent/'run_config.json').read_text())
+                for key in ('model_path','eval_root'):
+                    if original[key]!=cfg[key]:raise RuntimeError('Baseline source identity mismatch')
+                payload=json.loads(cached.read_text())
+                if payload['step']!=0 or payload['protocol']!={'generation':'fast','single_budget':128,'multi_budget':1024,'gt_length_budget':False}:raise RuntimeError('Baseline protocol mismatch')
+                shutil.copy2(cached,out/filename)
+            else:trainer.evaluate_suite(full=full,baseline=True)
     torch.manual_seed(42);torch.cuda.manual_seed_all(42)
     result=trainer.train(resume_from_checkpoint=args.resume)
     # Final save is mandatory even for benchmark/smoke interruptions.

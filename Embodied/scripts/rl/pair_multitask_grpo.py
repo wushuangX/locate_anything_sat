@@ -44,6 +44,26 @@ def main():
             (dest/'process.pid').write_text(str(proc.pid)+'\n');children.append((proc,log,tag,dest))
         dump_json(root/'active_processes.json',[{'tag':tag,'pid':proc.pid,'output':str(dest)} for proc,log,tag,dest in children])
         failed=[]
+        if phase=='train':
+            # Both jobs read this common budget at optimizer boundaries. Extend
+            # from wall-clock throughput, never from rising reward.
+            while all(proc.poll() is None for proc,_,_,_ in children):
+                progress=[]
+                for _,_,_,dest in children:
+                    path=dest/'progress.json'
+                    if path.exists():progress.append(json.loads(path.read_text()))
+                if len(progress)==2 and min(p['step'] for p in progress)>=100:
+                    current=json.loads((root/'budget.json').read_text())
+                    remaining=datetime.datetime.fromisoformat(args.deadline).timestamp()-time.time()-1.25*(current['quick_eval_seconds']+current['full_eval_seconds'])-120
+                    # Elapsed includes periodic evaluation; additionally reserve
+                    # future hourly checks. Use the slower observed arm.
+                    rate=max(p['elapsed_seconds']/max(1,p['step']-summaries[i]['step']) for i,p in enumerate(progress))
+                    candidate=int((min(p['step'] for p in progress)+max(0,remaining)*3600/(3600+current['quick_eval_seconds'])/rate)//50)*50
+                    if candidate>current['max_steps'] and min(p['step'] for p in progress)<current['max_steps']-50:
+                        current.update(max_steps=candidate,extended_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),observed_seconds_per_update=rate)
+                        dump_json(root/'budget.json',current)
+                        update('train_runs',budget=current)
+                time.sleep(15)
         for proc,log,tag,dest in children:
             rc=proc.wait();log.close()
             if rc:failed.append({'tag':tag,'returncode':rc,'output':str(dest)})
@@ -88,13 +108,13 @@ def main():
         available=max(0,deadline-time.time()-1.25*(quick+full)-600)
         updates=int((max(s['step'] for s in summaries)+available*3600/(3600+quick)/speed)//50)*50
         updates=max(200,updates)
-        budget={'max_steps':updates,'slower_seconds_per_update':speed,'quick_eval_seconds':quick,'full_eval_seconds':full,'deadline':args.deadline,'calculated_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'minimum_200_may_finish_after_deadline':available/speed<200,'benchmarks':summaries}
+        budget={'max_steps':updates,'slower_seconds_per_update':speed,'quick_eval_seconds':quick,'full_eval_seconds':full,'deadline':args.deadline,'calculated_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'minimum_200_may_finish_after_deadline':available/speed<200,'benchmarks':summaries,'extension_policy':'common steps extended from remaining time and slower observed throughput only'}
         dump_json(root/'budget.json',budget)
         update('preflight_passed',budget=budget)
         pair('train','runs',updates,resume=True)
         final={t:json.loads((root/'runs'/t/'train_summary.json').read_text()) for t in tags}
         update('completed',results=final)
-        dump_json(root/'comparison.json',{'budget':budget,'resume_checks':checks,'results':final})
+        dump_json(root/'comparison.json',{'budget':json.loads((root/'budget.json').read_text()),'resume_checks':checks,'results':final})
     except Exception as e:
         update('failed',error=str(e));raise
 

@@ -113,3 +113,9 @@ Inspect `status.json`, `budget.json`, `resume_checks.json`, per-job `progress.js
 actual entropy, KL, clipping, token lengths, reward variance and effective updates.
 The supervisor writes `comparison.json` after both final evaluations. This is a
 single-seed experiment, not a significance test or proof of new spatial reasoning.
+
+## Overnight time window update
+
+The user authorized additional equal steps for both arms when observed training is faster than the initial benchmark. The supervisor updates a shared budget from the slower wall-clock throughput and the time remaining until 10:00 Beijing, reserving quick/full final evaluation time. Extensions do not depend on reward and cannot override the numerical or regression stops. The budget remains common to both arms; an arm failure prevents further extensions. All new checkpoints, safe state and logs reside under `/root/rl_runs`, on the larger filesystem.
+
+The probability adapter reproduces native Slow prefill and cached autoregressive decoding, with differentiable KV tensors rather than detached prefix caches. This avoids the observed BF16 numerical difference between cache sampling and full-sequence teacher forcing. Exact resume and both production benchmarks must pass again after this change.
