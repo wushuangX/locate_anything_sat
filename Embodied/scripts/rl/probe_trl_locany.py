@@ -103,7 +103,8 @@ def main():
                     p.requires_grad_('lora_' in n and f'.{policy}.' in n)
         lm.disable_adapter=types.MethodType(sft_reference,lm)
         samples_log=[]
-        def geometry_reward(completions,**kw):
+        def geometry_reward(completions,completion_ids,**kw):
+            completions=[tokenizer.decode(ids,skip_special_tokens=False) for ids in completion_ids]
             rewards=[]
             for answer in completions:
                 if not isinstance(answer,str):answer=answer[-1]['content']
@@ -160,6 +161,18 @@ def main():
             rl=old.completion_token_logprobs(model,context,comp,old.REFERENCE_ADAPTER,worker.device)
         lm.set_adapter(policy)
         record('initial_policy_reference_max_diff',float((pl-rl).abs().max()))
+        diagnostic=worker.predict(image,question,generation_mode='slow',temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=64,return_ids=True)
+        diagnostic_ids=diagnostic['sequences'].view(-1).to('cuda')
+        with torch.no_grad():
+            teacher=old.completion_token_logprobs(model,context,diagnostic_ids,policy,worker.device)[0,-diagnostic_ids.numel():]
+            incremental=[]
+            for i in range(min(12,diagnostic_ids.numel())):
+                prefix=torch.cat([context['prompt_ids'],diagnostic_ids[:i].view(1,-1)],dim=1)
+                logits=lm(input_ids=prefix,attention_mask=torch.ones_like(prefix),visual_features=context['vit_embeds'],image_token_index=model.config.image_token_index,use_cache=False,return_dict=True).logits[0,-1].float()
+                incremental.append(torch.log_softmax(logits,dim=-1)[diagnostic_ids[i]])
+            diff=float((teacher[:len(incremental)]-torch.stack(incremental)).abs().max())
+        record('causal_prefix_teacher_logp_max_diff',diff)
+        if diff>.1:raise RuntimeError(f'Causal probability mismatch: {diff}')
         train_result=trainer.train()
         delta=max(float((p.detach().cpu()-before[n]).abs().max()) for n,p in lm.named_parameters() if n in before)
         record('training',{'steps':trainer.state.global_step,'metrics':train_result.metrics,'max_policy_delta':delta,'history':trainer.state.log_history,'samples':samples_log})
