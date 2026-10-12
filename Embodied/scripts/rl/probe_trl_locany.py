@@ -27,6 +27,7 @@ def main():
     ap.add_argument('--model', required=True)
     ap.add_argument('--data-root', required=True)
     ap.add_argument('--output', required=True)
+    ap.add_argument('--sample-index', type=int, default=0)
     ap.add_argument('--task', default='T6', choices=['T1', 'T5', 'T6'])
     args = ap.parse_args()
     outdir = Path(args.output)
@@ -52,7 +53,8 @@ def main():
         torch.cuda.reset_peak_memory_stats()
         record('environment', {'torch':torch.__version__, 'transformers':transformers.__version__, 'peft':peft.__version__, 'trl':trl.__version__, 'git':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()})
         root=Path(args.data_root)
-        row=next(json.loads(line) for line in (root/f'exports/locateanything/train/{args.task}.jsonl').open() if '<box>none</box>' not in line and (root/json.loads(line)['image']).exists())
+        candidates=[json.loads(line) for line in (root/f'exports/locateanything/train/{args.task}.jsonl').open() if '<box>none</box>' not in line and (root/json.loads(line)['image']).exists()]
+        row=candidates[args.sample_index]
         from PIL import Image
         image=Image.open(root/row['image']).convert('RGB')
         question=row['conversations'][0]['value']
@@ -160,6 +162,8 @@ def main():
             pl=old.completion_token_logprobs(model,context,comp,policy,worker.device)
             rl=old.completion_token_logprobs(model,context,comp,old.REFERENCE_ADAPTER,worker.device)
         lm.set_adapter(policy)
+        reference_before={n:p.detach().cpu().clone() for n,p in lm.named_parameters() if f'.{old.REFERENCE_ADAPTER}.' in n}
+        record('entropy_note','not measured in this minimal bridge; logged zero is a placeholder, not policy entropy')
         record('initial_policy_reference_max_diff',float((pl-rl).abs().max()))
         diagnostic=worker.predict(image,question,generation_mode='slow',temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=64,return_ids=True)
         diagnostic_ids=diagnostic['sequences'].view(-1).to('cuda')
@@ -174,6 +178,8 @@ def main():
         record('causal_prefix_teacher_logp_max_diff',diff)
         if diff>.1:raise RuntimeError(f'Causal probability mismatch: {diff}')
         train_result=trainer.train()
+        record('frozen_reference_unchanged',all(torch.equal(p.detach().cpu(),reference_before[n]) for n,p in lm.named_parameters() if n in reference_before))
+        record('old_policy_logps_cached',any(b.get('old_per_token_logps') is not None for b in trainer._buffered_inputs))
         delta=max(float((p.detach().cpu()-before[n]).abs().max()) for n,p in lm.named_parameters() if n in before)
         record('training',{'steps':trainer.state.global_step,'metrics':train_result.metrics,'max_policy_delta':delta,'history':trainer.state.log_history,'samples':samples_log})
         record('adapter_save_reload', 'pending')
