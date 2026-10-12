@@ -100,6 +100,7 @@ class DataIndex:
                 if len(selected)==2:break
         if len(selected)!=2:raise ValueError('Need two distinct positive images for smoke')
         self.schedule=selected*100
+        self.schedule_sha256=hashlib.sha256(json.dumps(self.schedule,separators=(',',':')).encode()).hexdigest()
 
 
 def geometry_reward(answer,row,width,height):

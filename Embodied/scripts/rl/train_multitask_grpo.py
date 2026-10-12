@@ -242,6 +242,8 @@ class LocanyGRPOTrainer(GRPOTrainer):
     def _load_from_checkpoint(self,resume_from_checkpoint,model=None):
         dest=Path(resume_from_checkpoint)
         if not (dest/'COMPLETE.json').exists():raise RuntimeError('Incomplete RL checkpoint')
+        dependency=json.loads((dest/'locany_dependency.json').read_text())
+        if dependency['sft_checkpoint']!=self.run_config['model_path'] or dependency['config_sha256']!=digest(Path(self.run_config['model_path'])/'config.json'):raise RuntimeError('Resume SFT dependency mismatch')
         saved=load_state(dest/'locany_rl_state')
         if saved['schedule_sha256']!=self.index.schedule_sha256 or saved['data_hashes']!=self.index.hashes:raise RuntimeError('Resume data/schedule mismatch')
         if saved['beta']!=self.run_config['beta'] or saved['seed']!=self.run_config['seed']:raise RuntimeError('Resume experiment mismatch')
