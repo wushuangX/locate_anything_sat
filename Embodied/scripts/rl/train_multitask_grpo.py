@@ -368,6 +368,9 @@ def run(args):
     selftest_state(out)
     if args.phase=='selftest':return
     import trl,transformers,peft
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.benchmark=False
+    torch.backends.cuda.matmul.allow_tf32=False
     if trl.__version__!='0.24.0':raise RuntimeError('Validated runtime requires TRL 0.24.0')
     index=DataIndex(cfg['data_root'],cfg['eval_root'],cfg['seed'])
     if args.phase=='smoke':index.smoke_schedule()

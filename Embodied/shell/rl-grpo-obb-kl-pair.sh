@@ -8,4 +8,5 @@ RUN_ROOT=${RUN_ROOT:-/root/rl_runs/obb_kl_pair_20261013}
 DEADLINE=${DEADLINE:-2026-10-13T10:00:00+08:00}
 export PYTHONPATH="$TRL_SITE:$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 exec "$RL_PYTHON" scripts/rl/pair_multitask_grpo.py --root "$RUN_ROOT" --deadline "$DEADLINE"
