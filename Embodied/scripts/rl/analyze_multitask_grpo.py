@@ -181,13 +181,20 @@ def replay(args):
     selection=json.loads((out/'replay_manifest.json').read_text())
     worker=LocateAnythingWorker('/data/eval_transfer/checkpoint-16500',device='cuda')
     lm=worker.model.language_model;policy=lm.active_adapter
+    if args.trainer_precision:
+        from accelerate import Accelerator
+        accelerator=Accelerator(mixed_precision='bf16')
+        accelerator.prepare_model(lm)
     initial={k:v.detach().cpu().clone() for k,v in get_peft_model_state_dict(lm,adapter_name=policy).items()}
     models=[('baseline',None),(args.tag+'_final',root/'runs'/args.tag/'checkpoint-1000'),(args.tag+'_best',root/'runs'/args.tag/('checkpoint-138' if args.tag=='kl002' else 'checkpoint-388'))]
-    with (out/(args.tag+'_replay.jsonl')).open('w') as f:
+    suffix='_trainer' if args.trainer_precision else ''
+    with (out/(args.tag+'_replay'+suffix+'.jsonl')).open('w') as f:
         for name,ckpt in models:
             state=initial if ckpt is None else load_file(str(ckpt/'adapter_model.safetensors'))
             loaded=set_peft_model_state_dict(lm,state,adapter_name=policy)
             if loaded.unexpected_keys:raise ValueError(loaded.unexpected_keys)
+            actual=get_peft_model_state_dict(lm,adapter_name=policy)
+            if set(state)!=set(actual) or any(not torch.equal(actual[k].detach().cpu(),state[k]) for k in state):raise ValueError('Loaded adapter differs from requested state')
             lm.set_adapter(policy);worker.model.eval()
             for selected in selection:
                 sid=selected['sample_id'];spec,record=queries[sid];c=canon[spec['image_id']];image=Image.open(Path(args.eval_root)/record['image']).convert('RGB')
@@ -241,7 +248,8 @@ def representation(args):
 def summarize_replay(args):
     out=Path(args.output);root=Path(args.run_root);selection=json.loads((out/'replay_manifest.json').read_text());result={};modelrows={};baseline_rows={}
     for tag in ('kl002','kl005'):
-        rows=lines(out/(tag+'_replay.jsonl'))
+        suffix='_trainer' if args.trainer_precision else ''
+        rows=lines(out/(tag+'_replay'+suffix+'.jsonl'))
         if len(rows)!=3*(2*len(selection)+sum(x['stochastic'] for x in selection)):raise ValueError('Replay incomplete')
         basepred={r['sample_id']:r for r in lines(Path(args.baseline)/tag/'eval/baseline_full/predictions.jsonl')}
         finalpred={r['sample_id']:r for r in lines(root/'runs'/tag/'eval/step-1000_full/predictions.jsonl')}
@@ -262,11 +270,11 @@ def summarize_replay(args):
             result[tag][model]=d
     result['baseline_two_gpus_equal']=baseline_rows['kl002']==baseline_rows['kl005']
     result['note']='Random fixed diagnostic subset: 20 positives and 8 negatives per task. Stochastic check only 2 positive queries per task, G=8. Do not replace full-val estimates with subset results.'
-    dump_json(out/'replay_summary.json',result);print(json.dumps(result),flush=True)
+    dump_json(out/('replay_summary'+('_trainer' if args.trainer_precision else '')+'.json'),result);print(json.dumps(result),flush=True)
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['offline','replay','representation','summarize-replay'],required=True);p.add_argument('--output',required=True);p.add_argument('--run-root',default='/root/rl_runs/obb_kl_pair_20261013');p.add_argument('--baseline',default='/root/rl_runs/obb_kl_pair_20261013_full_teacher/runs');p.add_argument('--eval-root',default='/data/dota_multitask_eval_subset');p.add_argument('--data-root',default='/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1');p.add_argument('--tag',choices=['kl002','kl005']);args=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['offline','replay','representation','summarize-replay'],required=True);p.add_argument('--output',required=True);p.add_argument('--run-root',default='/root/rl_runs/obb_kl_pair_20261013');p.add_argument('--baseline',default='/root/rl_runs/obb_kl_pair_20261013_full_teacher/runs');p.add_argument('--eval-root',default='/data/dota_multitask_eval_subset');p.add_argument('--data-root',default='/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1');p.add_argument('--tag',choices=['kl002','kl005']);p.add_argument('--trainer-precision',action='store_true');args=p.parse_args()
     {'offline':offline,'replay':replay,'representation':representation,'summarize-replay':summarize_replay}[args.phase](args)
 
 
