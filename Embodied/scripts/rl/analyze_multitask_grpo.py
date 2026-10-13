@@ -146,12 +146,20 @@ def offline(args):
         result['runs'][tag] = {'tasks':tasks, 'bootstrap':bootstrap(main), 'final_summary':metric['summary'], 'baseline_summary':baseline_metric['summary']}
         allpairs[tag] = rows
     index = DataIndex(args.data_root, args.eval_root)
+    result['eligible_train_queries']=len(index.rows)
+    result['data_audit']={}
     for tag in ('kl002', 'kl005'):
-        records = lines(root/'runs'/tag/'groups.jsonl'); training = []
+        records = lines(root/'runs'/tag/'groups.jsonl'); training = [];audit=collections.Counter();train_sources=set()
         seen = set()
         for g in records:
             if g['step'] in seen: raise ValueError('Duplicate rollout step')
             seen.add(g['step']); row = index.load(g['row_idx']); rewards = g['rewards']; std = statistics.stdev(rewards)
+            train_sources.add(row['canonical']['source_image_id'])
+            if row['record']['image']!=row['canonical']['image_path']:audit['image_path_mismatch']+=1
+            if row['spec']['task_id']=='T8':
+                point=Point(row['spec']['condition']['coordinates'])
+                if row['targets'] and not gt_polygon(row['targets'][0],'obb').covers(point):audit['positive_T8_point_outside_GT']+=1
+                if not row['targets'] and any(o['status']=='valid' and o['category_id']==row['spec']['query']['category_id'] and gt_polygon(o,'obb').covers(point) for o in row['canonical']['objects']):audit['negative_T8_point_inside_valid_GT']+=1
             negative = not row['targets']; threshold = 1. if negative or row['spec']['output']['geometry'] == 'point' else .5
             training.append({'task':g['task'],'negative':negative,'sid':g['sample_id'],'image':row['spec']['image_id'],'mean':avg(rewards),'std':std,'amplification':1/(std+1e-4),'all_success':all(v >= threshold for v in rewards),'all_fail':all(v < threshold for v in rewards),'all_invalid':all(v == -1 for v in rewards),'zero_std':std < 1e-12,'tiny_std':0 < std < .01,'truncated':sum(not v for v in g['terminated']),'oracle':float(max(rewards)>=threshold)})
         def stats(gs):
@@ -161,6 +169,7 @@ def offline(args):
         tr['by_polarity']={str(v):stats([g for g in training if g['negative']==v]) for v in (False,True)}
         tr['window100']=[stats(training[i:i+100]) for i in range(0,len(training),100)]
         result['runs'][tag]['training']=tr
+        result['data_audit'][tag]={'issues':dict(audit),'visited_train_source_images':len(train_sources),'train_val_source_overlap':len(train_sources & {c['source_image_id'] for c in canon.values()})}
     # The models consume an identical query sequence; only policy samples differ.
     a=lines(root/'runs/kl002/groups.jsonl');b=lines(root/'runs/kl005/groups.jsonl')
     result['query_sequence_equal']=[g['sample_id'] for g in a]==[g['sample_id'] for g in b]

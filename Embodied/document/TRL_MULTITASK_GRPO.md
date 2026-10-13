@@ -119,3 +119,11 @@ single-seed experiment, not a significance test or proof of new spatial reasonin
 The user authorized additional equal steps for both arms when observed training is faster than the initial benchmark. The supervisor updates a shared budget from the slower wall-clock throughput and the time remaining until 10:00 Beijing, reserving quick/full final evaluation time. Extensions do not depend on reward and cannot override the numerical or regression stops. The budget remains common to both arms; an arm failure prevents further extensions. All new checkpoints, safe state and logs reside under `/root/rl_runs`, on the larger filesystem.
 
 The probability adapter reproduces native Slow prefill and cached autoregressive decoding, with differentiable KV tensors rather than detached prefix caches. This avoids the observed BF16 numerical difference between cache sampling and full-sequence teacher forcing. Exact resume and both production benchmarks must pass again after this change.
+
+## Evaluation precision correction (2026-10-13)
+
+Accelerator wraps the language model forward with bf16 autocast when training starts. The initial baseline was evaluated before this wrapping, while the original completed run's final evaluations retained it. FP32 LoRA layers consequently followed different arithmetic paths; those original baseline-versus-policy numbers are not a controlled weight-only comparison.
+
+`evaluate_suite` now temporarily uses the LM's original forward and restores the training wrapper afterward. Its metadata records `native_worker_no_amp`, matching a fresh deployment worker. The correction was checked through the real evaluator on 22 positive/negative queries spanning all 11 tasks: all outputs matched the native worker and the training wrapper was restored. Completed adapters were independently re-evaluated on all 3,330 queries. Original results remain available for traceability.
+
+`analyze_multitask_grpo.py` provides paired source-image bootstrap, reward-group statistics, standalone adapter reload checks, controlled decoder/precision replay and counterfactual point-condition probes. Its equivalent-OBB representation calculation is a separate diagnostic; it preserves the original rectangle geometry and does not overwrite official predictions or change the current strict reward protocol.
