@@ -5,6 +5,7 @@ import collections
 import json
 import math
 import random
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -205,10 +206,68 @@ def replay(args):
             print('FINISHED',name,flush=True)
 
 
+def representation(args):
+    """Diagnostic equivalent representations; never overwrite official predictions."""
+    root=Path(args.run_root);out=Path(args.output)
+    canon,names,queries=environment(args.eval_root)
+    predictions={'baseline':Path(args.baseline)/'kl002/eval/baseline_full/predictions.jsonl',
+                 'kl002':root/'runs/kl002/eval/step-1000_full/predictions.jsonl',
+                 'kl005':root/'runs/kl005/eval/step-1000_full/predictions.jsonl'}
+    result={}
+    pattern=re.compile(r'<box>((?:<\d+>){5})</box>')
+    for name,path in predictions.items():
+        counts=collections.defaultdict(collections.Counter);examples=[]
+        for pred in lines(path):
+            spec,record=queries[pred['sample_id']]
+            if spec['task_id'] not in MAIN or not spec['output']['target_object_ids']:continue
+            before=feature(spec,record,canon[spec['image_id']],pred,names)
+            changed=[]
+            def replace(m):
+                q=[int(v) for v in re.findall(r'<(\d+)>',m[1])]
+                if not all(0<=v<=1000 for v in q) or min(q[2:4])<=0:return m[0]
+                if q[2]<q[3]:q[2],q[3]=q[3],q[2];q[4]=(q[4]+500)%1000;changed.append('w_lt_h')
+                elif q[4]==1000:q[4]=0;changed.append('angle_wrap')
+                else:return m[0]
+                return '<box>'+''.join(f'<{v}>' for v in q)+'</box>'
+            answer=pattern.sub(replace,pred['answer'])
+            after=feature(spec,record,canon[spec['image_id']],dict(pred,answer=answer),names)
+            c=counts[spec['task_id']];c['n']+=1;c['strict_success']+=before['success'];c['equivalent_success']+=after['success'];c['changed_queries']+=bool(changed);c['recovered']+=not before['success'] and after['success']
+            if changed:examples.append({'sample_id':spec['sample_id'],'task':spec['task_id'],'class':before['label'],'changes':changed,'strict_score':before['score'],'equivalent_score':after['score'],'strict_answer':pred['answer'],'equivalent_answer':answer})
+        result[name]={'tasks':{t:dict(c) for t,c in counts.items()},'strict_primary':avg([c['strict_success']/c['n'] for c in counts.values()]),'equivalent_primary':avg([c['equivalent_success']/c['n'] for c in counts.values()]),'examples':examples}
+    dump_json(out/'representation_diagnostic.json',result)
+    print(json.dumps({k:{a:b for a,b in v.items() if a!='examples'} for k,v in result.items()}),flush=True)
+
+
+def summarize_replay(args):
+    out=Path(args.output);root=Path(args.run_root);selection=json.loads((out/'replay_manifest.json').read_text());result={};modelrows={};baseline_rows={}
+    for tag in ('kl002','kl005'):
+        rows=lines(out/(tag+'_replay.jsonl'))
+        if len(rows)!=3*(2*len(selection)+sum(x['stochastic'] for x in selection)):raise ValueError('Replay incomplete')
+        basepred={r['sample_id']:r for r in lines(Path(args.baseline)/tag/'eval/baseline_full/predictions.jsonl')}
+        finalpred={r['sample_id']:r for r in lines(root/'runs'/tag/'eval/step-1000_full/predictions.jsonl')}
+        result[tag]={}
+        for model in sorted({r['model'] for r in rows}):
+            d={};subset=[r for r in rows if r['model']==model]
+            for mode in ('fast','slow'):
+                ss=[r for r in subset if r['mode']==mode];pos=[r for r in ss if r['features']['positive']];neg=[r for r in ss if not r['features']['positive']]
+                d[mode]={'positive_n':len(pos),'positive_success':avg([float(r['features']['success']) for r in pos]),'mean_iou':avg([r['features']['score'] for r in pos]),'negative_n':len(neg),'negative_success':avg([float(r['features']['success']) for r in neg]),'failure_reasons':dict(collections.Counter(r['features']['reason'] for r in pos if not r['features']['success'])),'task_success':{t:avg([float(r['features']['success']) for r in pos if r['task']==t]) for t in MAIN}}
+                for r in ss:modelrows[(model,mode,r['sample_id'])]=r
+            sampled=[r for r in subset if r['mode']=='slow_sample8']
+            d['sample8']={'queries':len(sampled),'mean_reward':avg([avg(r['rewards']) for r in sampled]),'oracle8_success':avg([float(max(r['rewards'])>=.5) for r in sampled]),'zero_std_queries':sum(statistics.stdev(r['rewards'])<1e-12 for r in sampled)}
+            d['modes_same_answer']=sum(modelrows[(model,'fast',x['sample_id'])]['prediction']['answer']==modelrows[(model,'slow',x['sample_id'])]['prediction']['answer'] for x in selection)
+            if model=='baseline' or model.endswith('_final'):
+                stored=basepred if model=='baseline' else finalpred
+                d['fast_answer_matches_saved']=sum(modelrows[(model,'fast',x['sample_id'])]['prediction']['answer']==stored[x['sample_id']]['answer'] for x in selection)
+            if model=='baseline':baseline_rows[tag]={x['sample_id']:modelrows[(model,'fast',x['sample_id'])]['prediction']['answer'] for x in selection}
+            result[tag][model]=d
+    result['baseline_two_gpus_equal']=baseline_rows['kl002']==baseline_rows['kl005']
+    result['note']='Random fixed diagnostic subset: 20 positives and 8 negatives per task. Stochastic check only 2 positive queries per task, G=8. Do not replace full-val estimates with subset results.'
+    dump_json(out/'replay_summary.json',result);print(json.dumps(result),flush=True)
+
+
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['offline','replay'],required=True);p.add_argument('--output',required=True);p.add_argument('--run-root',default='/root/rl_runs/obb_kl_pair_20261013');p.add_argument('--baseline',default='/root/rl_runs/obb_kl_pair_20261013_full_teacher/runs');p.add_argument('--eval-root',default='/data/dota_multitask_eval_subset');p.add_argument('--data-root',default='/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1');p.add_argument('--tag',choices=['kl002','kl005']);args=p.parse_args()
-    if args.phase=='offline':offline(args)
-    else:replay(args)
+    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['offline','replay','representation','summarize-replay'],required=True);p.add_argument('--output',required=True);p.add_argument('--run-root',default='/root/rl_runs/obb_kl_pair_20261013');p.add_argument('--baseline',default='/root/rl_runs/obb_kl_pair_20261013_full_teacher/runs');p.add_argument('--eval-root',default='/data/dota_multitask_eval_subset');p.add_argument('--data-root',default='/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1');p.add_argument('--tag',choices=['kl002','kl005']);args=p.parse_args()
+    {'offline':offline,'replay':replay,'representation':representation,'summarize-replay':summarize_replay}[args.phase](args)
 
 
 if __name__=='__main__':main()
