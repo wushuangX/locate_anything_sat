@@ -308,9 +308,87 @@ def deployment_eval(args):
     print('SUMMARY',json.dumps(summary),flush=True)
 
 
+def spatial_probe(args):
+    """Counterfactual point changes on the same image/category, diagnostic only."""
+    import copy
+    import torch
+    from PIL import Image
+    from safetensors.torch import load_file
+    from peft import set_peft_model_state_dict,get_peft_model_state_dict
+    from locateanything_worker import LocateAnythingWorker
+    canon,names,queries=environment(args.eval_root);root=Path(args.run_root);out=Path(args.output)
+    candidates=[]
+    for sid,(spec,record) in sorted(queries.items()):
+        if spec['task_id']!='T8' or not spec['output']['target_object_ids']:continue
+        c=canon[spec['image_id']];obj={o['object_id']:o for o in c['objects']};target=obj[spec['output']['target_object_ids'][0]]
+        others=[o for o in c['objects'] if o['status']=='valid' and o['category_id']==spec['query']['category_id'] and o['object_id']!=target['object_id']]
+        if others:candidates.append((spec,record,target,max(others,key=lambda o:math.dist(o['obb'][:2],target['obb'][:2]))))
+    random.Random(42).shuffle(candidates);pairs=[];seen=set()
+    for spec,record,a,b in candidates:
+        if spec['image_id'] in seen:continue
+        seen.add(spec['image_id']);pairs.append((spec,record,a,b))
+        if len(pairs)==12:break
+    worker=LocateAnythingWorker('/data/eval_transfer/checkpoint-16500',device='cuda');lm=worker.model.language_model;policy=lm.active_adapter
+    initial={k:v.detach().cpu().clone() for k,v in get_peft_model_state_dict(lm,adapter_name=policy).items()}
+    events=[]
+    for model,state in [('baseline',initial),(args.tag,load_file(str(root/'runs'/args.tag/'checkpoint-1000/adapter_model.safetensors')))]:
+        set_peft_model_state_dict(lm,state,adapter_name=policy);worker.model.eval()
+        for i,(original,record,a,b) in enumerate(pairs):
+            c=canon[original['image_id']];image=Image.open(Path(args.eval_root)/record['image']).convert('RGB')
+            for j,obj in enumerate((a,b)):
+                q=[round(obj['obb'][0]/image.width*1000),round(obj['obb'][1]/image.height*1000)];point=[q[0]*image.width/1000,q[1]*image.height/1000]
+                if not gt_polygon(obj,'obb').covers(Point(point)):raise ValueError('Counterfactual point is outside target')
+                spec=copy.deepcopy(original);spec['sample_id']+=f'_cf_{j}';spec['output']['target_object_ids']=[obj['object_id']];spec['condition']['coordinates']=point;spec['condition']['quantized_coordinates']=q
+                r=copy.deepcopy(record);r['conversations'][0]['value']=re.sub(r'<box>(?:<\d+>){2}</box>',f'<box><{q[0]}><{q[1]}></box>',r['conversations'][0]['value'],count=1)
+                for mode in ('fast','slow'):
+                    pred=worker.predict(image,r['conversations'][0]['value'],generation_mode=mode,temperature=0.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=128,return_ids=False)
+                    events.append({'model':model,'pair':i,'choice':j,'mode':mode,'image_id':original['image_id'],'label':names[spec['query']['category_id']],'answer':pred['answer'],'features':feature(spec,r,c,pred,names)})
+    summary={}
+    for model in ('baseline',args.tag):
+        summary[model]={}
+        for mode in ('fast','slow'):
+            selected=[r for r in events if r['model']==model and r['mode']==mode];pairs_results=[]
+            for i in range(len(pairs)):
+                a,b=[r for r in selected if r['pair']==i];pairs_results.append({'both_correct':a['features']['success'] and b['features']['success'],'identical_answer':a['answer']==b['answer']})
+            summary[model][mode]={'queries':len(selected),'success':avg([float(r['features']['success']) for r in selected]),'pairs_both_correct':sum(r['both_correct'] for r in pairs_results),'pairs_identical_answer':sum(r['identical_answer'] for r in pairs_results),'pairs':len(pairs)}
+    dump_json(out/(args.tag+'_spatial_probe.json'),{'summary':summary,'events':events,'note':'Diagnostic constructed point conditions: two different valid objects of the same category in the same image. 12 selected images, not a new held-out benchmark.'})
+    print('SUMMARY',json.dumps(summary),flush=True)
+
+
+def verify_eval_fix(args):
+    from types import SimpleNamespace
+    from accelerate import Accelerator
+    from locateanything_worker import LocateAnythingWorker
+    from train_multitask_grpo import LocanyGRPOTrainer
+    import train_multitask_grpo as module
+    from PIL import Image
+    worker=LocateAnythingWorker('/data/eval_transfer/checkpoint-16500',device='cuda')
+    lm=worker.model.language_model;selected=[]
+    all_queries=quick_specs(args.eval_root,0)
+    for t in (f'T{i}' for i in range(1,12)):
+        for positive in (True,False):
+            selected.append(next((s,r) for s,r in all_queries if s['task_id']==t and bool(s['output']['target_object_ids'])==positive))
+    expected={}
+    for spec,record in selected:
+        image=Image.open(Path(args.eval_root)/record['image']).convert('RGB')
+        pred=worker.predict(image,record['conversations'][0]['value'],generation_mode='fast',temperature=0.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=128 if spec['output']['cardinality']=='single' else 1024,return_ids=False)
+        expected[spec['sample_id']]=pred['answer']
+    accelerator=Accelerator(mixed_precision='bf16');accelerator.prepare_model(lm);wrapped=lm.forward
+    dest=Path(args.output)/'eval_fix_verification'
+    fake=SimpleNamespace(worker=worker,index=SimpleNamespace(eval_root=Path(args.eval_root)),policy=lm.active_adapter,args=SimpleNamespace(output_dir=str(dest)),state=SimpleNamespace(global_step=0),native_predict=worker.predict)
+    original=module.quick_specs;module.quick_specs=lambda *a,**kw:selected
+    try:LocanyGRPOTrainer.evaluate_suite(fake,baseline=True)
+    finally:module.quick_specs=original
+    actual={r['sample_id']:r['answer'] for r in lines(dest/'eval/baseline_quick/predictions.jsonl')}
+    result={'queries':len(selected),'native_worker_matches':sum(actual[k]==v for k,v in expected.items()),'training_wrapper_restored':lm.forward is wrapped}
+    dump_json(dest/'verification.json',result)
+    if actual!=expected or not result['training_wrapper_restored']:raise ValueError('Evaluation precision fix failed')
+    print('VERIFIED',json.dumps(result),flush=True)
+
+
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['offline','replay','representation','summarize-replay','deployment-eval'],required=True);p.add_argument('--output',required=True);p.add_argument('--run-root',default='/root/rl_runs/obb_kl_pair_20261013');p.add_argument('--baseline',default='/root/rl_runs/obb_kl_pair_20261013_full_teacher/runs');p.add_argument('--eval-root',default='/data/dota_multitask_eval_subset');p.add_argument('--data-root',default='/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1');p.add_argument('--tag',choices=['kl002','kl005']);p.add_argument('--trainer-precision',action='store_true');p.add_argument('--deployment-root');args=p.parse_args()
-    {'offline':offline,'replay':replay,'representation':representation,'summarize-replay':summarize_replay,'deployment-eval':deployment_eval}[args.phase](args)
+    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['offline','replay','representation','summarize-replay','deployment-eval','spatial-probe','verify-eval-fix'],required=True);p.add_argument('--output',required=True);p.add_argument('--run-root',default='/root/rl_runs/obb_kl_pair_20261013');p.add_argument('--baseline',default='/root/rl_runs/obb_kl_pair_20261013_full_teacher/runs');p.add_argument('--eval-root',default='/data/dota_multitask_eval_subset');p.add_argument('--data-root',default='/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1');p.add_argument('--tag',choices=['kl002','kl005']);p.add_argument('--trainer-precision',action='store_true');p.add_argument('--deployment-root');args=p.parse_args()
+    {'offline':offline,'replay':replay,'representation':representation,'summarize-replay':summarize_replay,'deployment-eval':deployment_eval,'spatial-probe':spatial_probe,'verify-eval-fix':verify_eval_fix}[args.phase](args)
 
 
 if __name__=='__main__':main()
