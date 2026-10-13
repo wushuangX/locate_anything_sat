@@ -38,8 +38,8 @@ def environment(root):
     return canonical, names, queries
 
 
-def feature(spec, record, canonical, pred, names):
-    r = prepared(spec, record, canonical, pred, names)
+def feature(spec, record, canonical, pred, names, obb_validation='strict'):
+    r = prepared(spec, record, canonical, pred, names, obb_validation=obb_validation)
     positive = bool(r['targets'])
     good = r['legal'] and r['terminated'] and len(r['items']) == 1 and r['items'][0]['eligible']
     score = 0.

@@ -108,7 +108,9 @@ ANCHOR_QUOTAS={'T1':30,'T4':30,'T5':30,'T7':30,'T6':20,'T8':20,'T9':20,'T2':5,'T
 
 class AnchorIndex(DataIndex):
     """All eleven tasks, file offsets only; balance polarity within 200-row blocks."""
-    def __init__(self,root,eval_root,seed=42,groups=200000):
+    def __init__(self,root,eval_root,seed=42,groups=200000,quotas=None):
+        quotas=ANCHOR_QUOTAS if quotas is None else quotas
+        if set(quotas)!=set(ANCHOR_QUOTAS) or sum(quotas.values())!=200 or any(not isinstance(n,int) or n<=0 for n in quotas.values()):raise ValueError('Anchor quotas must cover eleven tasks in200-row blocks')
         self.root=Path(root);self.eval_root=Path(eval_root);self.rows=[]
         self.names={c['id']:c['canonical_name'] for c in json.loads((self.root/'configs/categories.json').read_text())['categories']}
         self.canonical={}
@@ -120,7 +122,7 @@ class AnchorIndex(DataIndex):
                 row=json.loads(line);self.canonical[row['image_id']]=offset
         self.record_path=self.root/'exports/locateanything/train.jsonl'
         self.spec_path=self.root/'exports/locateanything/train_tasks.jsonl'
-        pools={t:{True:[],False:[]} for t in ANCHOR_QUOTAS};stats=Counter()
+        pools={t:{True:[],False:[]} for t in quotas};stats=Counter()
         with self.record_path.open('rb') as rh,self.spec_path.open('rb') as sh:
             while True:
                 ro,so=rh.tell(),sh.tell();rl,sl=rh.readline(),sh.readline()
@@ -139,7 +141,7 @@ class AnchorIndex(DataIndex):
         emitted=Counter()
         for block in range(math.ceil(groups/200)):
             choices=[]
-            for t,n in ANCHOR_QUOTAS.items():
+            for t,n in quotas.items():
                 # Alternate which polarity receives the odd row across blocks.
                 for polarity,count in ((True,n//2+int(n%2 and block%2==0)),(False,n//2+int(n%2 and block%2==1))):
                     actual=polarity if pools[t][polarity] else not polarity

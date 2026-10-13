@@ -29,7 +29,7 @@ from scripts.eval_dota_multitask import prepared,compute_metrics
 
 
 def signature(cfg):
-    keys=('profile_version','model_path','data_root','eval_root','seed','beta','queries_per_generation','anchor_weight','obb_validation','scale_rewards','loss_type','diagnostic_manifest')
+    keys=('profile_version','model_path','data_root','eval_root','seed','beta','queries_per_generation','anchor_weight','anchor_quota_block','obb_validation','scale_rewards','loss_type','diagnostic_manifest')
     return hashlib.sha256(json.dumps({k:cfg[k] for k in keys},sort_keys=True).encode()).hexdigest()
 
 
@@ -100,7 +100,7 @@ class MultiQueryTrainer(base.LocanyGRPOTrainer):
                 if prompt!=self.current_row['record']['conversations'][0]['value']:raise RuntimeError('Prompt/query identity mismatch')
                 captured=[]
                 check=i%self.num_generations==0 and (self.run_config['phase']=='smoke' or self.generation_count<=2 or self.generation_count%25==0)
-                def hook(module,args,out):captured.append(out.logits[0,-1].detach().float().cpu())
+                def hook(module,args,out):captured.append(out.logits[0,-1].detach().float())
                 handle=lm.register_forward_hook(hook) if check else None
                 try:
                     pred=self.native_predict(self.current_image,prompt,generation_mode='slow',temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=128,return_ids=True)
@@ -177,7 +177,7 @@ class MultiQueryTrainer(base.LocanyGRPOTrainer):
             selected=ids.reshape(-1)==self.worker.model.config.image_token_index
             if int(selected.sum())!=context['vit_embeds'].shape[0]:raise RuntimeError('Anchor visual alignment mismatch')
             flat[selected]=context['vit_embeds'].to(flat.dtype)
-            with self.compute_loss_context_manager():
+            with self.accelerator.autocast():
                 hidden=qwen.model(inputs_embeds=flat.reshape_as(embeds),position_ids=positions,use_cache=False,return_dict=True).last_hidden_state
                 valid=labels[:,1:]!=-100;states=hidden[:,:-1,:][valid];targets=labels[:,1:][valid]
                 if not targets.numel():raise RuntimeError('Anchor has no supervised labels')
@@ -249,7 +249,7 @@ class MultiQueryTrainer(base.LocanyGRPOTrainer):
             payload={'tasks':metrics,'summary':summary,'strict_tasks':strict_metrics,'strict_summary':summaries(strict_metrics) if not slow else None,'seconds':time.monotonic()-start,'queries':len(specs),'sample_ids':[s['sample_id'] for s,r in specs],'protocol':{'generation':'slow' if slow else 'fast','single_budget':128,'multi_budget':1024,'gt_length_budget':False,'obb_validation':self.run_config['obb_validation']},'inference_precision':'native_worker_no_amp','step':self.state.global_step}
             dump_json(dest/'metrics.json',payload)
             if baseline:dump_json(Path(self.args.output_dir)/f'baseline_{"slow" if slow else "full" if full else "quick"}.json',payload)
-            if not baseline and not full and not slow:
+            if not baseline and not full and not slow and self.run_config['phase']=='train':
                 initial=json.loads((Path(self.args.output_dir)/'baseline_quick.json').read_text())['summary']
                 for key,threshold in [('primary',.05),('point',.05),('hbb',.05),('negative_none',.10)]:self.guard_counts[key]=self.guard_counts.get(key,0)+1 if summary[key]<initial[key]-threshold else 0
                 if any(v>=2 for v in self.guard_counts.values()):
@@ -269,10 +269,15 @@ class V2Control(TrainerCallback):
         if t._step_has_advantage:t.reward_driven_updates+=1
         t._step_has_advantage=False
         if t.run_config['phase']=='train':
+            paired_path=Path(args.output_dir).parents[1]/'paired_keep.json'
+            if paired_path.exists():t.protected['paired']=json.loads(paired_path.read_text())['step']
             path=Path(args.output_dir).parents[1]/'budget.json'
-            if path.exists() and time.time()>=json.loads(path.read_text())['training_deadline']:
-                control.should_training_stop=True;control.should_save=True
-                dump_json(Path(args.output_dir)/'TIME_STOP.json',{'step':state.global_step})
+            if path.exists():
+                budget=json.loads(path.read_text())
+                if state.global_step>=budget['max_steps']:control.should_training_stop=True;control.should_save=True
+                if time.time()>=budget['training_deadline']:
+                    control.should_training_stop=True;control.should_save=True
+                    dump_json(Path(args.output_dir)/'TIME_STOP.json',{'step':state.global_step})
         path=Path(args.output_dir)/'progress.json';p=json.loads(path.read_text())
         p.update(rl_queries=len(t.group_trace),unique_queries=len({g['sample_id'] for g in t.group_trace}),unique_images=len({g['image_id'] for g in t.group_trace}),reward_driven_updates=t.reward_driven_updates,zero_advantage_groups=sum(g['zero_std'] for g in t.group_trace),anchor_queries=t.anchor_cursor,anchor_weight=t.run_config['anchor_weight'])
         dump_json(path,p)
@@ -289,7 +294,7 @@ def run(args):
     torch.use_deterministic_algorithms(True);torch.backends.cudnn.benchmark=False;torch.backends.cuda.matmul.allow_tf32=False
     torch.manual_seed(cfg['seed']);torch.cuda.manual_seed_all(cfg['seed'])
     index=DataIndex(cfg['data_root'],cfg['eval_root'],cfg['seed'])
-    anchor=AnchorIndex(cfg['data_root'],cfg['eval_root'],cfg['seed']) if cfg['anchor_weight'] else None
+    anchor=AnchorIndex(cfg['data_root'],cfg['eval_root'],cfg['seed'],quotas=cfg['anchor_quota_block']) if cfg['anchor_weight'] else None
     if args.phase=='smoke':
         selected=[];seen=set()
         for idx in index.schedule:
@@ -314,10 +319,23 @@ def run(args):
     trainer.callback_handler.remove_callback(V2Control)
     trainer.add_callback(V2RunControl(trainer))
     trainer.add_callback(V2Control(trainer))
+    if args.phase=='verify':
+        from verify_multitask_grpo_v2 import verify
+        verify(trainer);return
     if args.phase=='eval':
-        for full,slow in ((False,False),(True,False),(False,True)):trainer.evaluate_suite(full=full,slow=slow,baseline=True)
+        if args.eval_checkpoint:
+            from safetensors.torch import load_file
+            from peft import set_peft_model_state_dict
+            dest=Path(args.eval_checkpoint)
+            dep=json.loads((dest/'locany_dependency.json').read_text())
+            if dep['sft_checkpoint']!=cfg['model_path'] or dep['config_sha256']!=digest(Path(cfg['model_path'])/'config.json'):raise RuntimeError('Evaluation dependency mismatch')
+            set_peft_model_state_dict(worker.model.language_model,load_file(str(dest/'adapter_model.safetensors')),adapter_name=trainer.policy)
+            trainer.state.global_step=int(dest.name.split('-')[-1])
+        for full,slow in ((False,False),(True,False),(False,True)):trainer.evaluate_suite(full=full,slow=slow,baseline=not bool(args.eval_checkpoint))
+        from spatial_multitask_grpo_v2 import spatial
+        spatial(trainer,baseline=not bool(args.eval_checkpoint))
         return
-    if args.phase=='train' and not args.resume:
+    if args.phase in ('train','benchmark') and not args.resume:
         baseline=Path(args.baseline_source)
         for name in ('quick','full','slow'):
             payload=json.loads((baseline/f'baseline_{name}.json').read_text())
@@ -332,6 +350,8 @@ def run(args):
         trainer.worker.model.eval();summary['fast_answer']=trainer.native_predict(trainer.current_image,trainer.current_row['record']['conversations'][0]['value'],generation_mode='fast',temperature=0.,max_new_tokens=128)['answer']
     if args.phase=='train':
         summary['final_quick']=trainer.evaluate_suite()['summary'];summary['final_full']=trainer.evaluate_suite(full=True)['summary'];summary['final_slow']=trainer.evaluate_suite(slow=True)['summary']
+        from spatial_multitask_grpo_v2 import spatial
+        summary['final_spatial']=spatial(trainer)
     dump_json(out/f'{args.phase}_summary.json',summary);print('SUMMARY',json.dumps(summary),flush=True)
 
 
@@ -348,8 +368,9 @@ class V2RunControl(base.RunControl):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',required=True);p.add_argument('--output',required=True)
-    p.add_argument('--phase',choices=['selftest','smoke','benchmark','train','eval'],default='train')
+    p.add_argument('--phase',choices=['selftest','smoke','benchmark','train','eval','verify'],default='train')
     p.add_argument('--max-steps',type=int,default=200);p.add_argument('--stop-step',type=int,default=0);p.add_argument('--resume');p.add_argument('--baseline-source')
+    p.add_argument('--eval-checkpoint')
     args=p.parse_args()
     try:run(args)
     except Exception:

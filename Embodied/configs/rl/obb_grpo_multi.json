@@ -8,6 +8,7 @@
   "beta": 0.02,
   "queries_per_generation": 4,
   "anchor_weight": 0,
+  "anchor_quota_block": {"T1":30,"T4":30,"T5":30,"T7":30,"T6":20,"T8":20,"T9":20,"T2":5,"T3":5,"T10":5,"T11":5},
   "obb_validation": "geometric_equivalent",
   "scale_rewards": "group",
   "loss_type": "grpo"

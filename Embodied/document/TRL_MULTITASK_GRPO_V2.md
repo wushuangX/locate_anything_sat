@@ -18,7 +18,9 @@ PBD supervision uses the original SFT MTP label builder (identical AST), block7,
 original position resets and the checkpoint Qwen2 training SDPA mask. Its loss
 includes both original AR labels and masked blocks. The frozen visual features
 are inserted into cloned embeddings. Hidden states feed chunked CE with
-activation checkpointing, avoiding a full sequence-by-vocabulary logits tensor.
+activation checkpointing and explicit bf16 training autocast, avoiding a full
+sequence-by-vocabulary logits tensor. Sampling probability checks stay on GPU
+to avoid CPU softmax thread overhead and cover every token in selected rollouts.
 
 There are four independent SFT examples per optimizer update. RL backward is
 already scaled by TRL for 32 accumulated completions. Each SFT backward is
@@ -58,6 +60,22 @@ production updates per arm. Only after all gates pass may formal training start.
 Budget is shared, rounded to100 RL queries/50 updates, with a12-hour training
 and monitoring cap per arm; setup and final full evaluation are separate.
 Only time/throughput can extend both arms together. Reward cannot extend runs.
+
+Launch from the clean isolated checkout with:
+
+```bash
+RL_OUTPUT_ROOT=/root/rl_runs/<new_run> RL_HOURS=12 bash shell/rl-grpo-obb-anchor-pair.sh
+```
+
+The supervisor performs smoke4, smoke1+resume4, exact state comparison, GPU
+identity/gradient/native-eval checks, fresh baseline evaluations, benchmark20,
+then resumes those20 updates into the formal stage. The initial common target
+is rounded to50 updates, includes the20 benchmark updates, and must cover at
+least400 RL queries. Formal training/monitoring is capped at12 hours from the
+formal-stage launch. A high Trainer loop ceiling permits common time-based
+extension; budget.json, not the Trainer loop ceiling, controls stopping.
+Final full evaluation is outside that cap. A protected paired checkpoint
+supports comparisons at a common update count if either arm stops early.
 
 Every50 updates retain latest3, first effective and best qualifying checkpoint.
 Every approximately2 hours run Fast550 + Slow84. Original nonfinite, reference,
