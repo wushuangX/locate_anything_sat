@@ -103,7 +103,8 @@ class MultiQueryTrainer(base.LocanyGRPOTrainer):
                 def hook(module,args,out):captured.append(out.logits[0,-1].detach().float())
                 handle=lm.register_forward_hook(hook) if check else None
                 try:
-                    pred=self.native_predict(self.current_image,prompt,generation_mode='slow',temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=128,return_ids=True)
+                    from performance_multitask_grpo_v2 import cached_rollout
+                    pred=cached_rollout(self)
                 finally:
                     if handle:handle.remove()
                 ids=pred['sequences'].view(-1).tolist()
@@ -306,7 +307,7 @@ def run(args):
                 if len(selected)==8:break
         index.schedule=selected*100
         index.schedule_sha256=hashlib.sha256(json.dumps(index.schedule,separators=(',',':')).encode()).hexdigest()
-    cfg.update(git_sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),task_counts=index.stats,data_hashes=index.hashes,schedule_sha256=index.schedule_sha256,anchor_schedule_sha256=anchor.schedule_sha256 if anchor else None,anchor_pool_counts=anchor.stats if anchor else None,versions={'trl':trl.__version__,'torch':torch.__version__,'transformers':transformers.__version__,'peft':peft.__version__})
+    cfg.update(git_sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),sampling_context_cache=True,task_counts=index.stats,data_hashes=index.hashes,schedule_sha256=index.schedule_sha256,anchor_schedule_sha256=anchor.schedule_sha256 if anchor else None,anchor_pool_counts=anchor.stats if anchor else None,versions={'trl':trl.__version__,'torch':torch.__version__,'transformers':transformers.__version__,'peft':peft.__version__})
     dump_json(out/'run_config.json',cfg)
     from locateanything_worker import LocateAnythingWorker
     worker=LocateAnythingWorker(cfg['model_path'],device='cuda',obb_validation=cfg['obb_validation'])
@@ -351,6 +352,14 @@ def run(args):
     final=out/f'checkpoint-{trainer.state.global_step}'
     if not (final/'COMPLETE.json').exists():trainer._save_checkpoint(trainer.model,None)
     summary={'phase':args.phase,'step':trainer.state.global_step,'effective_updates':trainer.effective_updates,'reward_driven_updates':trainer.reward_driven_updates,'groups':len(trainer.group_trace),'anchor_queries':trainer.anchor_cursor,'training_seconds':time.monotonic()-trainer.training_start,'peak_allocated_gib':torch.cuda.max_memory_allocated()/1024**3,'reference_hash':trainer.reference_hash,'last_checkpoint':str(final),'trainer_metrics':result.metrics}
+    initial_step=int(Path(args.resume).name.split('-')[-1]) if args.resume else 0
+    actual_updates=trainer.state.global_step-initial_step
+    summary['measured_updates']=actual_updates
+    summary['seconds_per_update']=summary['training_seconds']/actual_updates if actual_updates else None
+    # HF's max_steps is a runtime loop ceiling; its end-of-run throughput uses
+    # that ceiling even when our budget callback stopped earlier. Report actual.
+    result.metrics['train_steps_per_second']=actual_updates/summary['training_seconds']
+    result.metrics['train_samples_per_second']=actual_updates*32/summary['training_seconds']
     if args.phase=='smoke':
         trainer.worker.model.eval();summary['fast_answer']=trainer.native_predict(trainer.current_image,trainer.current_row['record']['conversations'][0]['value'],generation_mode='fast',temperature=0.,max_new_tokens=128)['answer']
     if args.phase=='train':

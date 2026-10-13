@@ -34,7 +34,7 @@ def resume_checks(root):
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--root',required=True);ap.add_argument('--hours',type=float,default=12);ap.add_argument('--existing-smoke',action='store_true');ap.add_argument('--check-only',action='store_true');ap.add_argument('--start-stage',choices=['smoke','verify'],default='smoke');args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--root',required=True);ap.add_argument('--hours',type=float,default=12);ap.add_argument('--existing-smoke',action='store_true');ap.add_argument('--check-only',action='store_true');ap.add_argument('--start-stage',choices=['smoke','verify','formal'],default='smoke');args=ap.parse_args()
     root=Path(args.root);root.mkdir(parents=True,exist_ok=True)
     if args.check_only:print(json.dumps(resume_checks(root)));return
     if subprocess.check_output(['git','status','--porcelain'],text=True).strip():raise RuntimeError('Execution checkout must be clean')
@@ -85,9 +85,23 @@ def main():
             pair('smoke','smoke_resumed',stop_step=1)
             pair('smoke','smoke_resumed',resume=True)
         checks=resume_checks(root);update('resume_passed',checks=checks)
-        pair('verify','verification')
-        pair('eval','baseline')
-        pair('benchmark','runs',100000)
+        if args.start_stage=='formal':
+            # Explicit restart after an equivalent performance-only deployment.
+            # Reuse the completed original production benchmark conservatively.
+            compatibility=resume_checks(root/'performance_restore')
+            for tag in TAGS:
+                v=json.loads((root/'verification'/tag/'verification.json').read_text())
+                if v['native_worker_matches']!=22 or not v['training_wrapper_restored'] or not v['trl_metadata_shuffle_split']:raise RuntimeError('Missing original verification gate')
+                p=json.loads((root/'performance'/tag/'performance.json').read_text())
+                if len(p['checks'])!=4 or not p['cpu_profile'] or not p['cuda_profile']:raise RuntimeError('Incomplete performance measurement')
+                for c in p['checks']:
+                    q=c['cached']
+                    if not q['identical_tokens'] or not q['identical_rng'] or q['max_sampling_logp_diff']>1e-4 or c['training_vs_sampling_logp_diff']>1e-4:raise RuntimeError('Cached trajectory mismatch')
+            update('performance_resume_passed',performance_resume=compatibility)
+        else:
+            pair('verify','verification')
+            pair('eval','baseline')
+            pair('benchmark','runs',100000)
         summaries=[json.loads((root/'runs'/tag/'benchmark_summary.json').read_text()) for tag in TAGS]
         configs=[json.loads((root/'runs'/tag/'run_config.json').read_text()) for tag in TAGS]
         if configs[0]['data_hashes']!=configs[1]['data_hashes'] or configs[0]['schedule_sha256']!=configs[1]['schedule_sha256']:raise RuntimeError('RL sequence mismatch')

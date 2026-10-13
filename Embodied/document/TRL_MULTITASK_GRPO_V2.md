@@ -91,3 +91,15 @@ sequential differentiable cached probability/backward path. A final-state-only
 output-head variant is measured as a probe; it is not enabled in training.
 GPU utilization is secondary to completed query throughput. Performance changes
 must pass these checks and apply to both arms before deployment.
+
+V2 Slow rollouts now reuse only the identity-bound current-batch projected visual
+features through the existing generate interface. No PBD/model changes, output
+head restriction, precision change, sampling change or probability approximation
+is enabled. This deterministic cache does not change the mathematical experiment
+signature. Deployment still records its Git SHA and sampling_context_cache flag.
+An explicit `--start-stage formal` restart additionally requires both performance
+reports and exact original-continuous4 vs new-code-resume1-to4 state equality.
+It reuses the completed production20 benchmark as a conservative throughput bound;
+the shared budget can subsequently extend from observed actual formal throughput.
+End-of-run throughput is corrected using actual updates, because HF's nominal
+Trainer loop ceiling overstates its default throughput after callback early stop.

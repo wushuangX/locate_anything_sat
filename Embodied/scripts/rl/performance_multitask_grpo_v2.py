@@ -82,12 +82,14 @@ def profile(trainer, checkpoint_dir=None):
         record['training_vs_sampling_logp_diff']=float((lp[0]-native[1][0]).abs().max())
         if not record['cached']['identical_tokens'] or not record['cached']['identical_rng'] or record['cached']['max_sampling_logp_diff']>1e-4 or record['training_vs_sampling_logp_diff']>1e-4:
             raise RuntimeError('Cached rollout changed the trajectory: '+json.dumps(record))
-        checks.append(record);print('PROFILE_QUERY',json.dumps(record),flush=True)
+        checks.append(record)
+        dump_json(Path(trainer.args.output_dir)/'performance_checks.json',checks)
+        print('PROFILE_QUERY',json.dumps(record),flush=True)
     # Profile the genuine sequential differentiable probability + backward path.
     trainer.bind_context(selected[0])
     # Use this query's own answer, avoiding any cross-query context association.
     torch.manual_seed(987);torch.cuda.manual_seed_all(987)
-    completion=cached_rollout(trainer)['sequences'].view(-1)
+    completion=cached_rollout(trainer)['sequences'].view(-1).to(worker.device)
     lm.zero_grad(set_to_none=True)
     with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,torch.profiler.ProfilerActivity.CUDA]) as prof:
         loss,_=trainer.causal_logps(completion,True)
