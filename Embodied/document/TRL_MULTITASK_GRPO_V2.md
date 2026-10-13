@@ -80,3 +80,14 @@ supports comparisons at a common update count if either arm stops early.
 Every50 updates retain latest3, first effective and best qualifying checkpoint.
 Every approximately2 hours run Fast550 + Slow84. Original nonfinite, reference,
 probability and consecutive metric-regression guards remain in force.
+
+## Throughput investigation
+
+`--phase profile --eval-checkpoint <adapter-checkpoint>` compares eight native
+Slow trajectories per query with the existing generate API's projected visual
+feature input. It checks raw tokens, CUDA RNG and sampling/training probabilities
+on OBB, conditional OBB, Point and negative queries. It also profiles the actual
+sequential differentiable cached probability/backward path. A final-state-only
+output-head variant is measured as a probe; it is not enabled in training.
+GPU utilization is secondary to completed query throughput. Performance changes
+must pass these checks and apply to both arms before deployment.

@@ -321,6 +321,9 @@ def run(args):
     trainer.callback_handler.remove_callback(V2Control)
     trainer.add_callback(V2RunControl(trainer))
     trainer.add_callback(V2Control(trainer))
+    if args.phase=='profile':
+        from performance_multitask_grpo_v2 import profile
+        profile(trainer,args.eval_checkpoint);return
     if args.phase=='verify':
         from verify_multitask_grpo_v2 import verify
         verify(trainer);return
@@ -374,7 +377,7 @@ class V2RunControl(base.RunControl):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',required=True);p.add_argument('--output',required=True)
-    p.add_argument('--phase',choices=['selftest','smoke','benchmark','train','eval','verify'],default='train')
+    p.add_argument('--phase',choices=['selftest','smoke','benchmark','train','eval','verify','profile'],default='train')
     p.add_argument('--max-steps',type=int,default=200);p.add_argument('--stop-step',type=int,default=0);p.add_argument('--resume');p.add_argument('--baseline-source')
     p.add_argument('--eval-checkpoint')
     args=p.parse_args()
