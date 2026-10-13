@@ -295,6 +295,12 @@ class LocanyGRPOTrainer(GRPOTrainer):
         names={c['id']:c['canonical_name'] for c in json.loads((root/'configs/categories.json').read_text())['categories']}
         groups={f'T{i}':[] for i in range(1,12)}
         lm=self.worker.model.language_model;was_training=lm.training;self.worker.model.eval();lm.set_adapter(self.policy)
+        # Accelerator wraps LM.forward with bf16 autocast after train() starts.
+        # The initial SFT baseline and deployment worker have no such wrapper.
+        # Use the original forward during every eval, then restore the training
+        # wrapper; FP32 LoRA arithmetic otherwise changes the discrete outputs.
+        eval_forward=lm.forward
+        if hasattr(lm,'_original_forward'):lm.forward=lm._original_forward
         tag=('baseline' if baseline else f'step-{self.state.global_step}')+('_full' if full else '_quick')
         dest=Path(self.args.output_dir)/'eval'/tag;dest.mkdir(parents=True,exist_ok=True)
         try:
@@ -313,7 +319,7 @@ class LocanyGRPOTrainer(GRPOTrainer):
                      'point':mean([metrics[t]['point_in_obb_accuracy'] for t in ('T1','T4')]),
                      'hbb':mean([metrics[t]['single_positive_success_50'] for t in ('T5','T7')]),
                      'negative_none':mean([m['negative_none_accuracy'] for m in metrics.values() if m['negative_none_accuracy'] is not None])}
-            payload={'tasks':metrics,'summary':summary,'seconds':time.monotonic()-start,'queries':len(specs),'protocol':{'generation':'fast','single_budget':128,'multi_budget':1024,'gt_length_budget':False},'step':self.state.global_step}
+            payload={'tasks':metrics,'summary':summary,'seconds':time.monotonic()-start,'queries':len(specs),'protocol':{'generation':'fast','single_budget':128,'multi_budget':1024,'gt_length_budget':False},'inference_precision':'native_worker_no_amp','step':self.state.global_step}
             dump_json(dest/'metrics.json',payload)
             if baseline:dump_json(Path(self.args.output_dir)/f'baseline_{"full" if full else "quick"}.json',payload)
             if not baseline and not full:
@@ -328,6 +334,7 @@ class LocanyGRPOTrainer(GRPOTrainer):
             print('EVAL',tag,json.dumps(summary),f'{payload["seconds"]:.1f}s',flush=True)
             return payload
         finally:
+            lm.forward=eval_forward
             lm.set_adapter(self.policy);lm.train(was_training)
             self.last_eval_wall=time.time()
 

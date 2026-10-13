@@ -8,13 +8,15 @@ import random
 import re
 import statistics
 import sys
+import time
+import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 from shapely.geometry import Point
-from scripts.eval_dota_multitask import prepared, pred_polygon, gt_polygon, overlap
+from scripts.eval_dota_multitask import prepared, pred_polygon, gt_polygon, overlap, compute_metrics
 from multitask_grpo_data import DataIndex, quick_specs, geometry_reward, dump_json
 
 MAIN = ('T6', 'T8', 'T9')
@@ -115,7 +117,8 @@ def offline(args):
     cases = []; allpairs = {}
     for tag in ('kl002', 'kl005'):
         p = root/'runs'/tag
-        preds = {r['sample_id']: r for r in lines(p/'eval/step-1000_full/predictions.jsonl')}
+        pred_root=Path(args.deployment_root)/('deployment_'+tag) if args.deployment_root else p/'eval/step-1000_full'
+        preds = {r['sample_id']: r for r in lines(pred_root/'predictions.jsonl')}
         if set(preds) != set(base): raise ValueError('Policy/baseline query identity mismatch')
         rows = []
         for sid, (spec, record) in queries.items():
@@ -138,7 +141,7 @@ def offline(args):
                         spec,record = queries[r['sample_id']]
                         cases.append({'tag': tag, 'change': kind, **r, 'image':record['image'], 'query':record['conversations'][0]['value'], 'spec':spec, 'baseline_answer':base[r['sample_id']]['answer'], 'policy_answer':preds[r['sample_id']]['answer']})
         main = [r for r in rows if r['task'] in MAIN and r['a']['positive']]
-        metric = json.loads((p/'eval/step-1000_full/metrics.json').read_text())
+        metric = json.loads((pred_root/'metrics.json').read_text())
         baseline_metric = json.loads((p/'baseline_full.json').read_text())
         result['runs'][tag] = {'tasks':tasks, 'bootstrap':bootstrap(main), 'final_summary':metric['summary'], 'baseline_summary':baseline_metric['summary']}
         allpairs[tag] = rows
@@ -220,6 +223,8 @@ def representation(args):
     predictions={'baseline':Path(args.baseline)/'kl002/eval/baseline_full/predictions.jsonl',
                  'kl002':root/'runs/kl002/eval/step-1000_full/predictions.jsonl',
                  'kl005':root/'runs/kl005/eval/step-1000_full/predictions.jsonl'}
+    if args.deployment_root:
+        for tag in ('kl002','kl005'):predictions[tag]=Path(args.deployment_root)/('deployment_'+tag)/'predictions.jsonl'
     result={}
     pattern=re.compile(r'<box>((?:<\d+>){5})</box>')
     for name,path in predictions.items():
@@ -273,9 +278,39 @@ def summarize_replay(args):
     dump_json(out/('replay_summary'+('_trainer' if args.trainer_precision else '')+'.json'),result);print(json.dumps(result),flush=True)
 
 
+def deployment_eval(args):
+    import torch
+    from PIL import Image
+    from safetensors.torch import load_file
+    from peft import set_peft_model_state_dict,get_peft_model_state_dict
+    from locateanything_worker import LocateAnythingWorker
+    canon,names,queries=environment(args.eval_root);root=Path(args.run_root)
+    out=Path(args.output)/('deployment_'+args.tag);out.mkdir(parents=True,exist_ok=True)
+    worker=LocateAnythingWorker('/data/eval_transfer/checkpoint-16500',device='cuda')
+    lm=worker.model.language_model;policy=lm.active_adapter
+    state=load_file(str(root/'runs'/args.tag/'checkpoint-1000/adapter_model.safetensors'))
+    set_peft_model_state_dict(lm,state,adapter_name=policy)
+    actual=get_peft_model_state_dict(lm,adapter_name=policy)
+    if set(state)!=set(actual) or any(not torch.equal(actual[k].detach().cpu(),state[k]) for k in state):raise ValueError('Adapter reload mismatch')
+    worker.model.eval();groups=collections.defaultdict(list);start=time.monotonic()
+    with (out/'predictions.jsonl').open('w') as fh:
+        for i,(sid,(spec,record)) in enumerate(queries.items()):
+            image=Image.open(Path(args.eval_root)/record['image']).convert('RGB')
+            budget=128 if spec['output']['cardinality']=='single' else 1024
+            pred=worker.predict(image,record['conversations'][0]['value'],generation_mode='fast',temperature=0.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=budget,return_ids=False)
+            pred={k:v for k,v in pred.items() if k not in ('sequences','history','parsed')};pred['sample_id']=sid
+            fh.write(json.dumps(pred,ensure_ascii=False)+'\n')
+            groups[spec['task_id']].append(prepared(spec,record,canon[spec['image_id']],pred,names))
+            if (i+1)%250==0:fh.flush();print('QUERIES',i+1,flush=True)
+    metrics={t:compute_metrics(rows) for t,rows in groups.items()}
+    summary={'primary':avg([metrics[t]['single_positive_success_50'] for t in MAIN]),'mean_iou':avg([metrics[t]['single_positive_mean_iou'] for t in MAIN]),'point':avg([metrics[t]['point_in_obb_accuracy'] for t in ('T1','T4')]),'hbb':avg([metrics[t]['single_positive_success_50'] for t in ('T5','T7')]),'negative_none':avg([m['negative_none_accuracy'] for m in metrics.values() if m['negative_none_accuracy'] is not None])}
+    dump_json(out/'metrics.json',{'summary':summary,'tasks':metrics,'queries':len(queries),'seconds':time.monotonic()-start,'step':1000,'inference_precision':'native_worker_no_amp','git_sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'protocol':{'generation':'fast','single_budget':128,'multi_budget':1024,'gt_length_budget':False}})
+    print('SUMMARY',json.dumps(summary),flush=True)
+
+
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['offline','replay','representation','summarize-replay'],required=True);p.add_argument('--output',required=True);p.add_argument('--run-root',default='/root/rl_runs/obb_kl_pair_20261013');p.add_argument('--baseline',default='/root/rl_runs/obb_kl_pair_20261013_full_teacher/runs');p.add_argument('--eval-root',default='/data/dota_multitask_eval_subset');p.add_argument('--data-root',default='/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1');p.add_argument('--tag',choices=['kl002','kl005']);p.add_argument('--trainer-precision',action='store_true');args=p.parse_args()
-    {'offline':offline,'replay':replay,'representation':representation,'summarize-replay':summarize_replay}[args.phase](args)
+    p=argparse.ArgumentParser();p.add_argument('--phase',choices=['offline','replay','representation','summarize-replay','deployment-eval'],required=True);p.add_argument('--output',required=True);p.add_argument('--run-root',default='/root/rl_runs/obb_kl_pair_20261013');p.add_argument('--baseline',default='/root/rl_runs/obb_kl_pair_20261013_full_teacher/runs');p.add_argument('--eval-root',default='/data/dota_multitask_eval_subset');p.add_argument('--data-root',default='/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1');p.add_argument('--tag',choices=['kl002','kl005']);p.add_argument('--trainer-precision',action='store_true');p.add_argument('--deployment-root');args=p.parse_args()
+    {'offline':offline,'replay':replay,'representation':representation,'summarize-replay':summarize_replay,'deployment-eval':deployment_eval}[args.phase](args)
 
 
 if __name__=='__main__':main()
