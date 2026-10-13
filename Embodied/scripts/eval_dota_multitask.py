@@ -72,10 +72,10 @@ def visible_ignore(obj, row, geometry):
     return p.envelope if geometry == 'hbb' else p
 
 
-def prepared(spec, record, row, prediction, names):
+def prepared(spec, record, row, prediction, names, obb_validation='strict'):
     geometry = spec['output']['geometry']
     width, height = row['image_info']['width'], row['image_info']['height']
-    parsed = parse_answer(prediction.get('answer', ''), geometry, width, height)
+    parsed = parse_answer(prediction.get('answer', ''), geometry, width, height, obb_validation=obb_validation)
     cat = spec['query']['category_id']
     objects = {o['object_id']: o for o in row['objects']}
     targets = [objects[i] for i in spec['output']['target_object_ids']]

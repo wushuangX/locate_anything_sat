@@ -81,7 +81,9 @@ def dequantize(q, geometry, width=448, height=448):
 _FRAME = re.compile(r'(?:<ref>([^<>]+)</ref>)?<box>((?:<\d+>)+|none)</box>')
 
 
-def parse_answer(answer, expected_geometry=None, width=448, height=448):
+def parse_answer(answer, expected_geometry=None, width=448, height=448, obb_validation='strict'):
+    if obb_validation not in ('strict', 'geometric_equivalent'):
+        raise ValueError(f'Unknown OBB validation mode: {obb_validation}')
     if expected_geometry is not None and expected_geometry not in ARITY:
         raise ValueError(f'Unknown output geometry {expected_geometry}')
     answer = answer.strip()
@@ -105,14 +107,23 @@ def parse_answer(answer, expected_geometry=None, width=448, height=448):
         valid = geometry is not None and all(0 <= x <= 1000 for x in q)
         if geometry == 'hbb':
             valid = valid and q[0] < q[2] and q[1] < q[3]
+        interpreted_q = q.copy()
         if geometry == 'obb':
-            valid = valid and q[2] >= q[3] > 0 and q[4] < 1000
+            if obb_validation == 'strict':
+                valid = valid and q[2] >= q[3] > 0 and q[4] < 1000
+            else:
+                valid = valid and q[2] > 0 and q[3] > 0
+                if valid:
+                    interpreted_q[4] %= 1000
+                    if q[2] < q[3]:
+                        interpreted_q[2:4] = [q[3], q[2]]
+                        interpreted_q[4] = (interpreted_q[4] + 500) % 1000
         if not valid:
             errors.append('invalid_geometry')
         if expected_geometry and geometry != expected_geometry:
             errors.append('wrong_output_geometry')
         items.append({'label': label, 'geometry': geometry, 'quantized': q,
-                      'coordinates': dequantize(q, geometry, width, height) if valid else None,
+                      'coordinates': dequantize(interpreted_q, geometry, width, height) if valid else None,
                       'valid': bool(valid)})
     if answer[cursor:].strip():
         errors.append('unparsed_text')

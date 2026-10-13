@@ -33,7 +33,11 @@ class LocateAnythingWorker:
         scheduler: str = "pipeline",
         group_size: int = 0,
         strict_attn: bool = False,
+        obb_validation: str = 'strict',
     ):
+        if obb_validation not in ('strict', 'geometric_equivalent'):
+            raise ValueError(f'Unknown OBB validation mode: {obb_validation}')
+        self.obb_validation = obb_validation
         self.device = device
         self.dtype = dtype
         self.use_batch_runtime = use_batch_runtime
@@ -257,7 +261,7 @@ class LocateAnythingWorker:
         if self.geometry_protocol == 'multitask_v1':
             if not isinstance(response, dict):
                 raise RuntimeError('Checkpoint runtime did not return multitask diagnostics')
-            response['parsed'] = parse_answer(response['answer'], output_geometry, image.width, image.height)
+            response['parsed'] = parse_answer(response['answer'], output_geometry, image.width, image.height, obb_validation=self.obb_validation)
             response['output_geometry'] = output_geometry
             return response
 

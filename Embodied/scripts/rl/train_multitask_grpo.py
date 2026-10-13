@@ -255,7 +255,9 @@ class LocanyGRPOTrainer(GRPOTrainer):
                  'protected':self.protected,'best_score':self.best_score,'guard_counts':self.guard_counts,
                  'schedule_sha256':self.index.schedule_sha256,'data_hashes':self.index.hashes,
                  'seed':self.run_config['seed'],'beta':self.run_config['beta']}
+        sidecar['experiment_signature']=self.run_config.get('experiment_signature')
         save_state(dest/'locany_rl_state',sidecar)
+        if hasattr(self,'save_extra_state'):self.save_extra_state(dest)
         dump_json(dest/'COMPLETE.json',{'step':self.state.global_step,'effective_updates':self.effective_updates,'reference_hash':self.reference_hash})
         self.prune()
 
@@ -265,6 +267,7 @@ class LocanyGRPOTrainer(GRPOTrainer):
         dependency=json.loads((dest/'locany_dependency.json').read_text())
         if dependency['sft_checkpoint']!=self.run_config['model_path'] or dependency['config_sha256']!=digest(Path(self.run_config['model_path'])/'config.json'):raise RuntimeError('Resume SFT dependency mismatch')
         saved=load_state(dest/'locany_rl_state')
+        if saved.get('experiment_signature')!=self.run_config.get('experiment_signature'):raise RuntimeError('Resume profile mismatch')
         if saved['schedule_sha256']!=self.index.schedule_sha256 or saved['data_hashes']!=self.index.hashes:raise RuntimeError('Resume data/schedule mismatch')
         if saved['beta']!=self.run_config['beta'] or saved['seed']!=self.run_config['seed']:raise RuntimeError('Resume experiment mismatch')
         super()._load_from_checkpoint(resume_from_checkpoint,model)
@@ -278,6 +281,7 @@ class LocanyGRPOTrainer(GRPOTrainer):
         self.effective_updates=saved['effective_updates'];self.group_trace=saved['group_trace']
         self.protected=saved['protected'];self.best_score=saved['best_score'];self.guard_counts=saved['guard_counts']
         self.loaded_custom_state=True
+        if hasattr(self,'load_extra_state'):self.load_extra_state(dest)
         dump_json(Path(self.args.output_dir)/'restore_check.json',{'step':json.loads((dest/'COMPLETE.json').read_text())['step'],'micro_step':self._step,'row_idx':self.current_index,'old_logps_present':bool(self._buffered_inputs and all(b.get('old_per_token_logps') is not None for b in self._buffered_inputs)),'reference_hash':self.reference_hash})
 
     def prune(self):

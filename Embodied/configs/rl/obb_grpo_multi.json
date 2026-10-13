@@ -1,0 +1,14 @@
+{
+  "profile_version": 2,
+  "model_path": "/data/eval_transfer/checkpoint-16500",
+  "data_root": "/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1",
+  "eval_root": "/data/dota_multitask_eval_subset",
+  "diagnostic_manifest": "/root/rl_runs/grpo_diagnosis_20261013/replay_manifest.json",
+  "seed": 42,
+  "beta": 0.02,
+  "queries_per_generation": 4,
+  "anchor_weight": 0,
+  "obb_validation": "geometric_equivalent",
+  "scale_rewards": "group",
+  "loss_type": "grpo"
+}

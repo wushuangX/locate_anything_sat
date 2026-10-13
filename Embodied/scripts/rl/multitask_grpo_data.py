@@ -103,10 +103,60 @@ class DataIndex:
         self.schedule_sha256=hashlib.sha256(json.dumps(self.schedule,separators=(',',':')).encode()).hexdigest()
 
 
-def geometry_reward(answer,row,width,height):
+ANCHOR_QUOTAS={'T1':30,'T4':30,'T5':30,'T7':30,'T6':20,'T8':20,'T9':20,'T2':5,'T3':5,'T10':5,'T11':5}
+
+
+class AnchorIndex(DataIndex):
+    """All eleven tasks, file offsets only; balance polarity within 200-row blocks."""
+    def __init__(self,root,eval_root,seed=42,groups=200000):
+        self.root=Path(root);self.eval_root=Path(eval_root);self.rows=[]
+        self.names={c['id']:c['canonical_name'] for c in json.loads((self.root/'configs/categories.json').read_text())['categories']}
+        self.canonical={}
+        path=self.root/'canonical/train.jsonl'
+        with path.open('rb') as f:
+            while True:
+                offset=f.tell();line=f.readline()
+                if not line:break
+                row=json.loads(line);self.canonical[row['image_id']]=offset
+        self.record_path=self.root/'exports/locateanything/train.jsonl'
+        self.spec_path=self.root/'exports/locateanything/train_tasks.jsonl'
+        pools={t:{True:[],False:[]} for t in ANCHOR_QUOTAS};stats=Counter()
+        with self.record_path.open('rb') as rh,self.spec_path.open('rb') as sh:
+            while True:
+                ro,so=rh.tell(),sh.tell();rl,sl=rh.readline(),sh.readline()
+                if not rl and not sl:break
+                if not rl or not sl:raise ValueError('Anchor record/spec count mismatch')
+                r,s=json.loads(rl),json.loads(sl)
+                if r['multitask']['sample_id']!=s['sample_id'] or r['multitask']['geometry_codec_version']!=CODEC:raise ValueError('Anchor identity/codec mismatch')
+                if s['image_id'] not in self.canonical or not (self.root/r['image']).is_file():raise ValueError('Missing anchor image')
+                t=s['task_id'];positive=bool(s['output']['target_object_ids'])
+                idx=len(self.rows);self.rows.append((ro,so));pools[t][positive].append(idx)
+                stats[t+('_positive' if positive else '_negative')]+=1
+        rng=random.Random(seed+173);cursors={};self.schedule=[]
+        for t,p in pools.items():
+            if not any(p.values()):raise ValueError('Empty anchor task '+t)
+            for polarity,items in p.items():rng.shuffle(items);cursors[t,polarity]=0
+        emitted=Counter()
+        for block in range(math.ceil(groups/200)):
+            choices=[]
+            for t,n in ANCHOR_QUOTAS.items():
+                # Alternate which polarity receives the odd row across blocks.
+                for polarity,count in ((True,n//2+int(n%2 and block%2==0)),(False,n//2+int(n%2 and block%2==1))):
+                    actual=polarity if pools[t][polarity] else not polarity
+                    for _ in range(count):
+                        items=pools[t][actual];key=(t,actual)
+                        if cursors[key]>=len(items):rng.shuffle(items);cursors[key]=0
+                        choices.append(items[cursors[key]]);cursors[key]+=1;emitted[t+('_positive' if actual else '_negative')]+=1
+            rng.shuffle(choices);self.schedule.extend(choices)
+        self.stats=dict(stats);self.emitted_stats=dict(emitted)
+        self.hashes={str(p):digest(p) for p in [self.record_path,self.spec_path,path,self.root/'configs/categories.json']}
+        self.schedule_sha256=hashlib.sha256(json.dumps(self.schedule,separators=(',',':')).encode()).hexdigest()
+
+
+def geometry_reward(answer,row,width,height,obb_validation='strict'):
     """Strict sequence reward. EOS required, wrong geometry/class/arity penalized."""
     if not answer.rstrip().endswith('<|im_end|>'):return -1.
-    geom=row['spec']['output']['geometry'];parsed=parse_answer(answer,geom,width,height)
+    geom=row['spec']['output']['geometry'];parsed=parse_answer(answer,geom,width,height,obb_validation=obb_validation)
     if not parsed['legal']:return -1.
     targets=row['targets']
     if not targets:return 1. if parsed['none'] and not parsed['items'] else -1.
