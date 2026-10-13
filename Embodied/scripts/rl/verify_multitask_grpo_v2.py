@@ -7,7 +7,6 @@ from PIL import Image
 from safetensors.torch import load_file
 from peft import set_peft_model_state_dict
 from multitask_grpo_data import dump_json,quick_specs
-import train_multitask_grpo_v2 as module
 import train_multitask_grpo as base
 
 
@@ -25,9 +24,8 @@ def verify(trainer):
         image=Image.open(index.eval_root/r['image']).convert('RGB')
         expected[s['sample_id']]=trainer.native_predict(image,r['conversations'][0]['value'],generation_mode='fast',temperature=0.,top_p=1.,top_k=0,repetition_penalty=1.,max_new_tokens=128 if s['output']['cardinality']=='single' else 1024)['answer']
     trainer.accelerator.prepare_model(worker.model.language_model)
-    wrapped=worker.model.language_model.forward;old=module.quick_specs;module.quick_specs=lambda *a,**k:selected
-    try:trainer.evaluate_suite(baseline=True)
-    finally:module.quick_specs=old
+    wrapped=worker.model.language_model.forward
+    trainer.evaluate_suite(baseline=True,selected_specs=selected)
     actual={r['sample_id']:r['answer'] for r in map(json.loads,(root/'eval/baseline_quick/predictions.jsonl').open())}
     if actual!=expected or worker.model.language_model.forward is not wrapped:raise RuntimeError('Native eval/reload precision mismatch')
     # Select from real training records; no synthetic/image-token aliasing.

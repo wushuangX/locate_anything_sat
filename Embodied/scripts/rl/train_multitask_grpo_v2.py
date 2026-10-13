@@ -220,9 +220,9 @@ class MultiQueryTrainer(base.LocanyGRPOTrainer):
             if expected!={'prompt':tensor_hash(self.context['prompt_ids']),'visual':tensor_hash(self.context['vit_embeds'])}:raise RuntimeError('Restored visual context mismatch')
         self.anchor_cursor=saved['anchor_cursor'];self.anchor_trace=saved['anchor_trace'];self.generation_count=saved['generation_count'];self.reward_driven_updates=saved['reward_driven_updates']
 
-    def evaluate_suite(self,full=False,baseline=False,slow=False):
+    def evaluate_suite(self,full=False,baseline=False,slow=False,selected_specs=None):
         start=time.monotonic();root=self.index.eval_root
-        specs=quick_specs(root,0 if full or slow else 50)
+        specs=selected_specs if selected_specs is not None else quick_specs(root,0 if full or slow else 50)
         if slow:
             ids={x['sample_id'] for x in json.loads(Path(self.run_config['diagnostic_manifest']).read_text())}
             specs=[p for p in specs if p[0]['sample_id'] in ids]
@@ -280,6 +280,8 @@ class V2Control(TrainerCallback):
                     dump_json(Path(args.output_dir)/'TIME_STOP.json',{'step':state.global_step})
         path=Path(args.output_dir)/'progress.json';p=json.loads(path.read_text())
         p.update(rl_queries=len(t.group_trace),unique_queries=len({g['sample_id'] for g in t.group_trace}),unique_images=len({g['image_id'] for g in t.group_trace}),reward_driven_updates=t.reward_driven_updates,zero_advantage_groups=sum(g['zero_std'] for g in t.group_trace),anchor_queries=t.anchor_cursor,anchor_weight=t.run_config['anchor_weight'])
+        if t.run_config['phase']=='train' and (Path(args.output_dir).parents[1]/'budget.json').exists():
+            p['trainer_loop_ceiling']=p['max_steps'];p['max_steps']=json.loads((Path(args.output_dir).parents[1]/'budget.json').read_text())['max_steps']
         dump_json(path,p)
 
 
@@ -363,6 +365,10 @@ class V2RunControl(base.RunControl):
         super().on_step_end(args,state,control,**kw)
         t.last_eval_wall=previous
         if t.run_config['phase']=='train' and time.time()-previous>=7200 and state.global_step%2==0:
+            budget=json.loads((Path(args.output_dir).parents[1]/'budget.json').read_text())
+            if state.global_step>=budget['max_steps']:return
+            if time.time()+1.2*budget['monitor_seconds']>=budget['training_deadline']:
+                control.should_training_stop=True;control.should_save=True;return
             t.evaluate_suite();t.evaluate_suite(slow=True);control.should_save=True
 
 

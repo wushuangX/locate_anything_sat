@@ -34,7 +34,7 @@ def resume_checks(root):
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--root',required=True);ap.add_argument('--hours',type=float,default=12);ap.add_argument('--existing-smoke',action='store_true');ap.add_argument('--check-only',action='store_true');args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--root',required=True);ap.add_argument('--hours',type=float,default=12);ap.add_argument('--existing-smoke',action='store_true');ap.add_argument('--check-only',action='store_true');ap.add_argument('--start-stage',choices=['smoke','verify'],default='smoke');args=ap.parse_args()
     root=Path(args.root);root.mkdir(parents=True,exist_ok=True)
     if args.check_only:print(json.dumps(resume_checks(root)));return
     if subprocess.check_output(['git','status','--porcelain'],text=True).strip():raise RuntimeError('Execution checkout must be clean')
@@ -80,9 +80,10 @@ def main():
         for p,log,tag,dest in children:log.close()
 
     try:
-        if not args.existing_smoke:pair('smoke','smoke_continuous')
-        pair('smoke','smoke_resumed',stop_step=1)
-        pair('smoke','smoke_resumed',resume=True)
+        if args.start_stage=='smoke':
+            if not args.existing_smoke:pair('smoke','smoke_continuous')
+            pair('smoke','smoke_resumed',stop_step=1)
+            pair('smoke','smoke_resumed',resume=True)
         checks=resume_checks(root);update('resume_passed',checks=checks)
         pair('verify','verification')
         pair('eval','baseline')
