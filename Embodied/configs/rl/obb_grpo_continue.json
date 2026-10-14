@@ -1,0 +1,18 @@
+{
+  "profile_version": 2,
+  "model_path": "/data/eval_transfer/checkpoint-16500",
+  "data_root": "/data/locate_anything_sat/Embodied/data/dota_v2_multitask_448_v1",
+  "eval_root": "/data/dota_multitask_eval_subset",
+  "diagnostic_manifest": "/root/rl_runs/grpo_diagnosis_20261013/replay_manifest.json",
+  "seed": 42,
+  "beta": 0.02,
+  "queries_per_generation": 4,
+  "anchor_weight": 0,
+  "anchor_quota_block": {"T1":30,"T4":30,"T5":30,"T7":30,"T6":20,"T8":20,"T9":20,"T2":5,"T3":5,"T10":5,"T11":5},
+  "obb_validation": "geometric_equivalent",
+  "scale_rewards": "group",
+  "loss_type": "grpo",
+  "rl_activation_checkpoint_min_tokens": 24,
+  "checkpoint_save_steps": 25,
+  "monitor_every_steps": 100
+}

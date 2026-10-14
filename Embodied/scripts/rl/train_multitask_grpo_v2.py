@@ -141,6 +141,13 @@ class MultiQueryTrainer(base.LocanyGRPOTrainer):
         if torch.any(inputs['advantages'].abs()>1e-12):self._step_has_advantage=True
         return super().compute_loss(model,inputs,**kwargs)
 
+    def causal_logps(self,completion,entropy=False):
+        threshold=self.run_config.get('rl_activation_checkpoint_min_tokens',0)
+        if threshold and completion.numel()>=threshold and torch.is_grad_enabled():
+            from memory_safe_grpo import checkpointed_logps
+            return checkpointed_logps(self,completion,entropy)
+        return super().causal_logps(completion,entropy)
+
     def _get_per_token_logps_and_entropies(self,model,input_ids,attention_mask,logits_to_keep,batch_size=None,compute_entropy=False,**kwargs):
         lm=self.worker.model.language_model;was_training=lm.training;lm.eval()
         lp_list=[];ent_list=[]
@@ -270,6 +277,9 @@ class V2Control(TrainerCallback):
         if t._step_has_advantage:t.reward_driven_updates+=1
         t._step_has_advantage=False
         if t.run_config['phase']=='train':
+            if (Path(args.output_dir)/'PAUSE_REQUEST.json').exists():
+                control.should_training_stop=True;control.should_save=True
+                dump_json(Path(args.output_dir)/'PAUSED.json',{'step':state.global_step,'checkpoint':str(Path(args.output_dir)/f'checkpoint-{state.global_step}')})
             paired_path=Path(args.output_dir).parents[1]/'paired_keep.json'
             if paired_path.exists():t.protected['paired']=json.loads(paired_path.read_text())['step']
             path=Path(args.output_dir).parents[1]/'budget.json'
@@ -315,7 +325,7 @@ def run(args):
     from selftest_multitask_grpo_v2 import run_tests
     dump_json(out/'protocol_checks.json',run_tests(worker.tokenizer))
     torch.cuda.reset_peak_memory_stats()
-    train_args=GRPOConfig(output_dir=str(out),max_steps=args.max_steps,num_generations=8,per_device_train_batch_size=1,gradient_accumulation_steps=32,steps_per_generation=32,num_iterations=2,beta=cfg['beta'],epsilon=.2,loss_type=cfg['loss_type'],scale_rewards=cfg['scale_rewards'],temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_completion_length=128,max_prompt_length=None,learning_rate=5e-7,lr_scheduler_type='constant',warmup_steps=0,max_grad_norm=1.,bf16=True,gradient_checkpointing=False,report_to='none',logging_steps=1,save_steps=1 if args.phase=='smoke' else 50,save_strategy='steps',save_total_limit=None,use_vllm=False,disable_dropout=True,remove_unused_columns=False,shuffle_dataset=False,seed=42,data_seed=42,dataloader_num_workers=0,dataloader_pin_memory=False,ignore_data_skip=False)
+    train_args=GRPOConfig(output_dir=str(out),max_steps=args.max_steps,num_generations=8,per_device_train_batch_size=1,gradient_accumulation_steps=32,steps_per_generation=32,num_iterations=2,beta=cfg['beta'],epsilon=.2,loss_type=cfg['loss_type'],scale_rewards=cfg['scale_rewards'],temperature=1.,top_p=1.,top_k=0,repetition_penalty=1.,max_completion_length=128,max_prompt_length=None,learning_rate=5e-7,lr_scheduler_type='constant',warmup_steps=0,max_grad_norm=1.,bf16=True,gradient_checkpointing=False,report_to='none',logging_steps=1,save_steps=1 if args.phase=='smoke' else cfg.get('checkpoint_save_steps',50),save_strategy='steps',save_total_limit=None,use_vllm=False,disable_dropout=True,remove_unused_columns=False,shuffle_dataset=False,seed=42,data_seed=42,dataloader_num_workers=0,dataloader_pin_memory=False,ignore_data_skip=False)
     trainer=MultiQueryTrainer(worker,index,cfg,anchor_index=anchor,args=train_args,train_dataset=index,processing_class=worker.tokenizer)
     # Avoid the legacy hourly evaluation callback; retain its other safeguards.
     trainer.callback_handler.remove_callback(base.RunControl)
@@ -328,6 +338,9 @@ def run(args):
     if args.phase=='verify':
         from verify_multitask_grpo_v2 import verify
         verify(trainer);return
+    if args.phase=='memorycheck':
+        from verify_memory_safe_grpo import verify_memory
+        verify_memory(trainer,args.eval_checkpoint);return
     if args.phase=='eval':
         if args.eval_checkpoint:
             from safetensors.torch import load_file
@@ -341,7 +354,7 @@ def run(args):
         from spatial_multitask_grpo_v2 import spatial
         spatial(trainer,baseline=not bool(args.eval_checkpoint))
         return
-    if args.phase in ('train','benchmark') and not args.resume:
+    if args.phase in ('train','benchmark') and (not args.resume or args.baseline_source):
         baseline=Path(args.baseline_source)
         for name in ('quick','full','slow'):
             payload=json.loads((baseline/f'baseline_{name}.json').read_text())
@@ -362,7 +375,7 @@ def run(args):
     result.metrics['train_samples_per_second']=actual_updates*32/summary['training_seconds']
     if args.phase=='smoke':
         trainer.worker.model.eval();summary['fast_answer']=trainer.native_predict(trainer.current_image,trainer.current_row['record']['conversations'][0]['value'],generation_mode='fast',temperature=0.,max_new_tokens=128)['answer']
-    if args.phase=='train':
+    if args.phase=='train' and not (out/'PAUSED.json').exists():
         summary['final_quick']=trainer.evaluate_suite()['summary'];summary['final_full']=trainer.evaluate_suite(full=True)['summary'];summary['final_slow']=trainer.evaluate_suite(slow=True)['summary']
         from spatial_multitask_grpo_v2 import spatial
         summary['final_spatial']=spatial(trainer)
@@ -376,7 +389,10 @@ class V2RunControl(base.RunControl):
         previous=t.last_eval_wall;t.last_eval_wall=time.time()
         super().on_step_end(args,state,control,**kw)
         t.last_eval_wall=previous
-        if t.run_config['phase']=='train' and time.time()-previous>=7200 and state.global_step%2==0:
+        if (Path(args.output_dir)/'PAUSE_REQUEST.json').exists():return
+        interval=t.run_config.get('monitor_every_steps',0)
+        due=(time.time()-previous>=7200 and state.global_step%2==0) or (interval and state.global_step%interval==0)
+        if t.run_config['phase']=='train' and due:
             budget=json.loads((Path(args.output_dir).parents[1]/'budget.json').read_text())
             if state.global_step>=budget['max_steps']:return
             if time.time()+1.2*budget['monitor_seconds']>=budget['training_deadline']:
@@ -386,7 +402,7 @@ class V2RunControl(base.RunControl):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',required=True);p.add_argument('--output',required=True)
-    p.add_argument('--phase',choices=['selftest','smoke','benchmark','train','eval','verify','profile'],default='train')
+    p.add_argument('--phase',choices=['selftest','smoke','benchmark','train','eval','verify','profile','memorycheck'],default='train')
     p.add_argument('--max-steps',type=int,default=200);p.add_argument('--stop-step',type=int,default=0);p.add_argument('--resume');p.add_argument('--baseline-source')
     p.add_argument('--eval-checkpoint')
     args=p.parse_args()

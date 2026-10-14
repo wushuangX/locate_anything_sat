@@ -403,6 +403,7 @@ ______________________________________________________________________
 | 来源 | 参数 | 默认 | 说明 |
 |---|---|---|---|
 | `scripts/rl/train_multitask_grpo_v2.py` / `shell/rl-grpo-obb-anchor-pair.sh` | `queries_per_generation` / `anchor_weight` / `anchor_quota_block` / `obb_validation` / `RL_HOURS` | `4` / `0或0.1` / 200条11任务配额 / `geometric_equivalent` / `12` | 独立双4090 GRPO与PBD监督对照；microbatch1、累计32、G8、轨迹更新2次；旧入口不变，v2禁止静默恢复v1 checkpoint；详见 `document/TRL_MULTITASK_GRPO_V2.md` |
+| `scripts/rl/continue_multitask_grpo.py` / `configs/rl/obb_grpo_continue.json` | `rl_activation_checkpoint_min_tokens` / `checkpoint_save_steps` / `monitor_every_steps` | `24` / `25` / `100` | GPU0纯GRPO从200到400；长轨迹AR重计算保留KV梯度，先过33/128-token显存验收；GPU1供用户使用；可用PAUSE_REQUEST在optimizer边界保存退出；详见 `document/GRPO_CONTINUATION.md` |
 | `locany_finetune_magi_stream.py` | `--model_name_or_path` | — | 基座/微调 checkpoint 路径 |
 | 同上 | `--meta_path` | — | Recipe JSON 路径 |
 | 同上 | `--block_size` | 6 | PBD 块长（MTP 并行解码） |
