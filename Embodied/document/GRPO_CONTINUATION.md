@@ -40,4 +40,9 @@ A data-only `runs/grpo/PAUSE_REQUEST.json` requests checkpoint/save/exit at the
 next optimizer boundary. During pause, final GPU evaluation is skipped; model,
 optimizer, RNG and pending old-probability cache are saved. Resume requires removing
 the request and supplying that complete checkpoint; no SIGSTOP memory hold is used.
+`--resume-checkpoint <complete-paused-checkpoint> --skip-memorycheck` explicitly
+resumes a paused continuation using its existing memory proof. Requests/logs are
+archived, and the saved pause interval extends the deadline without changing400.
+The training callback explicitly sets TrainerState.save_steps from current args,
+since HF otherwise reloads the old50-step cadence despite new args.save_steps25.
 Original pair outputs and GPU1 training are not modified.

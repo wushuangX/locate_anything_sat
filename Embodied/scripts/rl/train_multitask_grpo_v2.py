@@ -279,7 +279,7 @@ class V2Control(TrainerCallback):
         if t.run_config['phase']=='train':
             if (Path(args.output_dir)/'PAUSE_REQUEST.json').exists():
                 control.should_training_stop=True;control.should_save=True
-                dump_json(Path(args.output_dir)/'PAUSED.json',{'step':state.global_step,'checkpoint':str(Path(args.output_dir)/f'checkpoint-{state.global_step}')})
+                dump_json(Path(args.output_dir)/'PAUSED.json',{'step':state.global_step,'checkpoint':str(Path(args.output_dir)/f'checkpoint-{state.global_step}'),'paused_at':time.time()})
             paired_path=Path(args.output_dir).parents[1]/'paired_keep.json'
             if paired_path.exists():t.protected['paired']=json.loads(paired_path.read_text())['step']
             path=Path(args.output_dir).parents[1]/'budget.json'
@@ -383,6 +383,12 @@ def run(args):
 
 
 class V2RunControl(base.RunControl):
+    def on_train_begin(self,args,state,control,**kw):
+        super().on_train_begin(args,state,control,**kw)
+        # HF reloads TrainerState.save_steps from the old checkpoint even when
+        # args.save_steps changed. DefaultFlowCallback reads this state field.
+        state.save_steps=args.save_steps
+        dump_json(Path(args.output_dir)/'training_cadence.json',{'save_steps':state.save_steps,'resume_step':state.global_step,'target_step':args.max_steps})
     def on_step_end(self,args,state,control,**kw):
         t=self.t
         # Legacy callback's hourly condition is disabled here; v2 owns monitoring.
